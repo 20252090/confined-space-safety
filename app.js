@@ -1650,6 +1650,7 @@ function bindEvents(){
     if(!rescueTargetId) return;
     const w = state.workers.find(x=>x.id===rescueTargetId);
     report119(w ? `${w.name} · ${mhLabel(w)}` : '');
+    closeRescue();   // 119 신고 접수 후 구조 알림(오버레이) 자동 닫힘
   });
   // SOS 전체 대피 배너의 119 버튼
   const sosCall = $('.sos-banner__call'); if(sosCall) sosCall.addEventListener('click', ()=>report119('전체 대피'));
