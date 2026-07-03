@@ -61,7 +61,7 @@
         <ul class="rescue-relay__list" id="rescue-relay-list"></ul>
       </div>
 
-      <a class="btn btn--xl rescue-call" id="rescue-call" href="tel:119">📞 119 신고 전화</a>
+      <button type="button" class="btn btn--xl rescue-call" id="rescue-call">📞 119 신고 전화</button>
 
       <div class="rescue-steps">
         <div class="rescue-steps__h">지시자 대응 절차</div>
@@ -87,9 +87,20 @@
       </span>
     </div>
     <div class="topbar__row">
-      <div class="topbar__brand">
-        <span class="topbar__title" id="view-title">실시간 현황</span>
-        <span class="topbar__clock" id="topbar-clock">--:--:--</span>
+      <div class="topbar__lead">
+        <!-- 좌측 상단 로고 (SEWER GUARDIAN) -->
+        <div class="brand-logo" aria-label="VOID LINK">
+          <svg class="brand-logo__hex" viewBox="0 0 44 48" aria-hidden="true">
+            <polygon points="22,2 40,12 40,36 22,46 4,36 4,12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>
+            <circle cx="22" cy="25" r="9.5" fill="none" stroke="var(--logo-cyan)" stroke-width="2"/>
+            <path d="M17 22 Q22 15 27 21 Q31 26 24.5 29.5" fill="none" stroke="var(--logo-cyan)" stroke-width="2.2" stroke-linecap="round"/>
+          </svg>
+          <span class="brand-logo__wm"><b>VOID</b><b class="cyan">LINK</b></span>
+        </div>
+        <div class="topbar__brand">
+          <span class="topbar__title" id="view-title">실시간 현황</span>
+          <span class="topbar__clock" id="topbar-clock">--:--:--</span>
+        </div>
       </div>
       <div class="topbar__actions">
         <button class="icon-btn" id="settings-btn" aria-label="설정" title="설정">
@@ -110,13 +121,19 @@
         <span class="ss-g ss-g--warn">주의<b id="ss-warn">0</b></span>
         <span class="ss-g ss-g--danger">위험<b id="ss-danger">0</b></span>
       </div>
+      <div class="statstrip__gas" id="statstrip-gas">
+        <span class="ss-gas" id="env-o2-w"><small>O₂</small><b id="env-o2">--</b></span>
+        <span class="ss-gas" id="env-h2s-w"><small>H₂S</small><b id="env-h2s">--</b></span>
+        <span class="ss-gas" id="env-co-w"><small>CO</small><b id="env-co">--</b></span>
+        <span class="ss-gas" id="env-lel-w"><small>LEL</small><b id="env-lel">--</b></span>
+      </div>
       <div class="statstrip__phase" id="statstrip-phase">준비</div>
     </div>
 
     <!-- SOS 전체 대피 배너 (상단만 점멸) -->
     <div class="sos-banner" id="sos-banner" hidden>
       <span class="sos-banner__txt">🚨 전체 대피 발령 · 전원 복귀 중</span>
-      <a class="sos-banner__call" href="tel:119">📞 119 신고</a>
+      <button type="button" class="sos-banner__call">📞 119 신고</button>
       <button class="sos-banner__clear" id="sos-clear">해제</button>
     </div>
   </header>
@@ -150,42 +167,40 @@
 
     <!-- ---------- 현황 (관제 뷰) ---------- -->
     <section class="view view--stage" id="view-dashboard">
-      <div class="stage">
-        <!-- 배경: 하수도 관로 도면 -->
-        <div class="stage__bg" aria-hidden="true">
-          <div class="stage__grid"></div>
-          <svg class="stage__svg" id="stage-pipes" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
-          <div class="stage__nodes" id="stage-nodes"></div>
-          <div class="stage__legend-map">하수관로 내부 단면도 · 세로축 = 심도(m)</div>
+      <div class="stage mode-section" id="stage">
+        <!-- ===== 단면도(종단면) 레이어 ===== -->
+        <div class="maplayer maplayer--section" id="layer-section">
+          <!-- 배경: 하수도 관로 도면 -->
+          <div class="stage__bg" aria-hidden="true">
+            <div class="stage__grid"></div>
+            <svg class="stage__svg" id="stage-pipes" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+            <div class="stage__nodes" id="stage-nodes"></div>
+            <div class="stage__legend-map">하수관로 내부 단면도 · 세로축 = 심도(m)</div>
+          </div>
+          <!-- 작업자 마커 -->
+          <div class="stage__markers" id="stage-markers"></div>
+          <span class="maplayer__tag">단면도</span>
+          <button type="button" class="maplayer__min" aria-label="미니맵 최소화" title="미니맵 최소화">─</button>
         </div>
 
-        <!-- 작업자 마커 -->
-        <div class="stage__markers" id="stage-markers"></div>
+        <!-- ===== 입체(3D) 지도 레이어 ===== -->
+        <div class="maplayer maplayer--iso" id="layer-iso">
+          <svg class="iso-svg" id="iso-svg" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="stage__legend-map">밀폐공간 입체 지도 · 심도·구조</div>
+          <span class="maplayer__tag">입체 3D</span>
+          <button type="button" class="maplayer__min" aria-label="미니맵 최소화" title="미니맵 최소화">─</button>
+        </div>
+
+        <!-- 미니맵 전환 안내 배지 (비활성 지도 위에 표시) -->
+        <span class="minimap-swap" id="minimap-swap">⇄ 탭하여 전환</span>
+        <!-- 미니맵 최소화 시: 복원 버튼 -->
+        <button type="button" class="minimap-restore" id="minimap-restore" aria-label="미니맵 열기">🗺 지도</button>
+
         <div class="stage-empty" id="stage-empty">
           현재 밀폐공간 내부에 있는 작업자가 없습니다.<br />
           <span class="empty__hint">[준비] 탭에서 점검 후 입장 처리하세요.</span>
         </div>
 
-        <!-- 좌상단: 현장 실시간 정보 -->
-        <div class="panel panel--env">
-          <div class="panel__head">
-            <span class="live-dot"></span>
-            <span class="panel__title">현장 실시간 현황</span>
-          </div>
-          <div class="env-inside"><span id="env-inside">0</span><small>명 내부</small></div>
-          <div class="env-status">
-            <span class="es es--ok">정상<b id="env-ok">0</b></span>
-            <span class="es es--warn">주의<b id="env-warn">0</b></span>
-            <span class="es es--danger">위험<b id="env-danger">0</b></span>
-          </div>
-          <div class="env-gases">
-            <div class="env-gas"><span class="env-gas__l">O₂</span><span class="env-gas__v" id="env-o2">--</span></div>
-            <div class="env-gas"><span class="env-gas__l">H₂S</span><span class="env-gas__v" id="env-h2s">--</span></div>
-            <div class="env-gas"><span class="env-gas__l">CO</span><span class="env-gas__v" id="env-co">--</span></div>
-            <div class="env-gas"><span class="env-gas__l">LEL</span><span class="env-gas__v" id="env-lel">--</span></div>
-          </div>
-          <div class="env-foot">현장 대표 가스 · 내부 평균(시뮬레이션)</div>
-        </div>
 
         <!-- 우상단: 경고 -->
         <div class="panel panel--alerts is-collapsed" id="panel-alerts">

@@ -328,10 +328,22 @@ function renderInsideCounts(){
 function updateStatStrip(){
   const list = insideWorkers();
   const c = {ok:0,warn:0,danger:0};
-  list.forEach(w=>c[evalWorker(w).level]++);
+  const sum = {o2:0,h2s:0,co:0,lel:0};
+  list.forEach(w=>{ c[evalWorker(w).level]++; const g=gasCache.get(w.id)||simGas(w); sum.o2+=g.o2; sum.h2s+=g.h2s; sum.co+=g.co; sum.lel+=g.lel; });
+  const n = list.length;
   const set=(id,v)=>{ const e=$(id); if(e) e.textContent=v; };
-  set('#ss-inside', list.length);
+  set('#ss-inside', n);
   set('#ss-ok', c.ok); set('#ss-warn', c.warn); set('#ss-danger', c.danger);
+  const setGas=(id,wrapId,kind,val,dec)=>{
+    const e=$(id), w=$(wrapId); if(!e||!w) return;
+    if(!n){ e.textContent='--'; w.className='ss-gas'; return; }
+    e.textContent = val.toFixed(dec);
+    w.className = 'ss-gas is-'+gasStatus(kind,val);
+  };
+  setGas('#env-o2','#env-o2-w','o2', n?sum.o2/n:0, 1);
+  setGas('#env-h2s','#env-h2s-w','h2s', n?sum.h2s/n:0, 0);
+  setGas('#env-co','#env-co-w','co', n?sum.co/n:0, 0);
+  setGas('#env-lel','#env-lel-w','lel', n?sum.lel/n:0, 1);
   const strip = $('#statstrip'); if(strip) strip.classList.toggle('has-danger', c.danger>0);
 }
 
@@ -464,6 +476,178 @@ function buildSewer(){
   $('#stage-nodes').innerHTML = html;
 }
 
+/* ============================ 입체(3D) 지도 ============================
+   단면도와 동일한 맨홀 체인(A~J)을 평면 좌표(gx,gy)+심도로 아이소메트릭 투영.
+   심도가 깊을수록 수직구(shaft)가 아래로 길게 뻗어 심도·구조가 3D로 보인다. */
+const ISO_NODE = {
+  A:{gx:1.5,gy:2}, B:{gx:3,gy:2}, C:{gx:3,gy:4}, D:{gx:4.5,gy:4},
+  E:{gx:6,gy:4},   F:{gx:6,gy:2}, G:{gx:7.5,gy:2}, H:{gx:7.5,gy:4},
+  I:{gx:9,gy:4},   J:{gx:9,gy:2}
+};
+const ISO_ENT   = { EA:{gx:0,gy:2}, EB:{gx:10.5,gy:2} };
+const ISO_CHAIN = MANHOLES.map(m=>m.id);
+const ISO = { u:62, ox:415, oy:118, kd:12 };
+function isoPt(gx,gy,z){ return { x: ISO.ox + (gx-gy)*ISO.u*0.87, y: ISO.oy + (gx+gy)*ISO.u*0.5 + (z||0) }; }
+const isoS = (gx,gy,z)=>{ const p=isoPt(gx,gy,z); return `${p.x.toFixed(1)},${p.y.toFixed(1)}`; };
+const isoPlan  = id => ISO_ENT[id] || ISO_NODE[id];
+const isoDepth = id => ISO_ENT[id] ? 0.8*ISO.kd : MH_BY_ID[id].depth*ISO.kd;
+const isoMid   = (a,b)=>{ const p=isoPlan(a),q=isoPlan(b); return { gx:(p.gx+q.gx)/2, gy:(p.gy+q.gy)/2, z:(isoDepth(a)+isoDepth(b))/2 }; };
+
+/* 아이소 지도용 시설물(평면) */
+const ISO_SENSORS = [['A','B'],['C','D'],['F','G'],['H','I'],['I','J']]; // 구간 중점 가스센서
+const ISO_ZONES   = [
+  { seg:['E','F'], label:'H₂S 24ppm', lvl:'danger' },
+  { seg:['G','H'], label:'CH₄ 35%',   lvl:'warn'   },
+];
+const ISO_VENT = { gx:6, gy:0.6 };    // 환기 시설
+const ISO_WORK = ['B','C'];           // 작업 지점(구간)
+const ISO_EXIT = { gx:10.5, gy:3.4 }; // 비상 탈출구
+
+/* 아이소 정적 구조 1회 생성 */
+function buildIso(){
+  const svgEl = $('#iso-svg'); if(!svgEl) return;
+  let s = `<defs>
+    <radialGradient id="isoGround" cx="50%" cy="38%" r="72%">
+      <stop offset="0%" stop-color="#182634"/><stop offset="58%" stop-color="#101b26"/><stop offset="100%" stop-color="#090f16"/>
+    </radialGradient></defs>`;
+
+  // 지반(아이소 평면) + 격자 — 반투명이라 아래 구조가 비쳐 심도감
+  const g0=-1, g1=11.5, h0=0.5, h1=5.5;
+  s += `<polygon points="${isoS(g0,h0)} ${isoS(g1,h0)} ${isoS(g1,h1)} ${isoS(g0,h1)}" fill="url(#isoGround)" stroke="#25394b" stroke-width="1.5"/>`;
+  for(let gx=Math.ceil(g0); gx<=Math.floor(g1); gx++){ const a=isoPt(gx,h0),b=isoPt(gx,h1); s+=`<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#233a4d" stroke-width="1" stroke-opacity=".5"/>`; }
+  for(let gy=Math.ceil(h0); gy<=Math.floor(h1); gy++){ const a=isoPt(g0,gy),b=isoPt(g1,gy); s+=`<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="#233a4d" stroke-width="1" stroke-opacity=".5"/>`; }
+
+  // 터널(본선 + 입구 연결) — 심도에서 3D 트로프 + 근측 벽 + 흐름선
+  const chain = ['EA', ...ISO_CHAIN, 'EB'];
+  const edges = [];
+  for(let i=0;i<chain.length-1;i++) edges.push([chain[i], chain[i+1]]);
+  edges.sort((e1,e2)=> (isoMid(e1[0],e1[1]).gx+isoMid(e1[0],e1[1]).gy) - (isoMid(e2[0],e2[1]).gx+isoMid(e2[0],e2[1]).gy));
+  const W = 0.17;
+  edges.forEach(([a,b])=>{
+    const pa=isoPlan(a), pb=isoPlan(b), za=isoDepth(a), zb=isoDepth(b);
+    const dx=pb.gx-pa.gx, dy=pb.gy-pa.gy, len=Math.hypot(dx,dy)||1;
+    const nx=-dy/len*W, ny=dx/len*W;
+    const A1=isoPt(pa.gx+nx,pa.gy+ny,za), A2=isoPt(pa.gx-nx,pa.gy-ny,za);
+    const B1=isoPt(pb.gx+nx,pb.gy+ny,zb), B2=isoPt(pb.gx-nx,pb.gy-ny,zb);
+    // 근측 벽(두께감)
+    const A2u=isoPt(pa.gx-nx,pa.gy-ny,za-13), B2u=isoPt(pb.gx-nx,pb.gy-ny,zb-13);
+    s += `<polygon points="${A2u.x.toFixed(1)},${A2u.y.toFixed(1)} ${B2u.x.toFixed(1)},${B2u.y.toFixed(1)} ${B2.x.toFixed(1)},${B2.y.toFixed(1)} ${A2.x.toFixed(1)},${A2.y.toFixed(1)}" fill="#15334a" stroke="#2b556f" stroke-width="1"/>`;
+    // 바닥 트로프
+    s += `<polygon points="${A1.x.toFixed(1)},${A1.y.toFixed(1)} ${B1.x.toFixed(1)},${B1.y.toFixed(1)} ${B2.x.toFixed(1)},${B2.y.toFixed(1)} ${A2.x.toFixed(1)},${A2.y.toFixed(1)}" fill="#0b1a27" stroke="#2b556f" stroke-width="1.4" stroke-linejoin="round"/>`;
+    // 흐름선
+    const c1=isoPt(pa.gx,pa.gy,za-5), c2=isoPt(pb.gx,pb.gy,zb-5);
+    s += `<line class="iso-flow" x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${c2.x.toFixed(1)}" y2="${c2.y.toFixed(1)}" stroke="#39a7e6" stroke-width="2.2" stroke-opacity=".6"/>`;
+  });
+
+  // 맨홀 수직구(shaft) — 심도만큼 아래로. 뒤→앞 순서로 그림
+  const shafts = ISO_CHAIN.slice().sort((i,j)=>(ISO_NODE[i].gx+ISO_NODE[i].gy)-(ISO_NODE[j].gx+ISO_NODE[j].gy));
+  const rx=9, ry=4.6;
+  shafts.forEach(id=>{
+    const p=ISO_NODE[id], z=isoDepth(id);
+    const top=isoPt(p.gx,p.gy,0), bot=isoPt(p.gx,p.gy,z);
+    s += `<rect x="${(top.x-rx).toFixed(1)}" y="${top.y.toFixed(1)}" width="${(rx*2).toFixed(1)}" height="${z.toFixed(1)}" fill="#0a141d" fill-opacity=".82"/>`;
+    s += `<line x1="${(top.x-rx).toFixed(1)}" y1="${top.y.toFixed(1)}" x2="${(bot.x-rx).toFixed(1)}" y2="${bot.y.toFixed(1)}" stroke="#3a688a" stroke-width="1.2"/>`;
+    s += `<line x1="${(top.x+rx).toFixed(1)}" y1="${top.y.toFixed(1)}" x2="${(bot.x+rx).toFixed(1)}" y2="${bot.y.toFixed(1)}" stroke="#3a688a" stroke-width="1.2"/>`;
+    s += `<ellipse cx="${bot.x.toFixed(1)}" cy="${bot.y.toFixed(1)}" rx="${rx}" ry="${ry}" fill="#0c1b28" stroke="#2b556f" stroke-width="1.4"/>`;
+    s += `<ellipse cx="${top.x.toFixed(1)}" cy="${top.y.toFixed(1)}" rx="${rx}" ry="${ry}" fill="#16344a" stroke="#5f8fb4" stroke-width="1.6"/>`;
+    s += `<text class="iso-lbl-mh" x="${top.x.toFixed(1)}" y="${(top.y-9).toFixed(1)}" text-anchor="middle">${MH_BY_ID[id].label}</text>`;
+    s += `<text class="iso-lbl-depth" x="${(bot.x+rx+3).toFixed(1)}" y="${(bot.y+3).toFixed(1)}">-${MH_BY_ID[id].depth.toFixed(1)}m</text>`;
+  });
+
+  // 입구 A/B (초록 삼각형)
+  Object.entries({EA:'A 입구', EB:'B 입구'}).forEach(([id,label])=>{
+    const p=ISO_ENT[id], t=isoPt(p.gx,p.gy,-4);
+    s += `<polygon points="${t.x.toFixed(1)},${(t.y-16).toFixed(1)} ${(t.x-11).toFixed(1)},${(t.y+3).toFixed(1)} ${(t.x+11).toFixed(1)},${(t.y+3).toFixed(1)}" fill="#2fd06e" stroke="#0a3d1f" stroke-width="1.4"/>`;
+    s += `<text class="iso-ent-lbl" x="${t.x.toFixed(1)}" y="${(t.y+20).toFixed(1)}" text-anchor="middle">${label}</text>`;
+  });
+
+  // 환기 시설(팬)
+  (function(){ const c=isoPt(ISO_VENT.gx,ISO_VENT.gy,-6);
+    s += `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="11" fill="#0d2233" stroke="#4bd0d0" stroke-width="1.6"/>`;
+    for(let k=0;k<3;k++){ const ang=k*2.094; s+=`<line x1="${c.x.toFixed(1)}" y1="${c.y.toFixed(1)}" x2="${(c.x+Math.cos(ang)*8).toFixed(1)}" y2="${(c.y+Math.sin(ang)*8).toFixed(1)}" stroke="#4bd0d0" stroke-width="1.8"/>`; }
+    s += `<text class="iso-fac-lbl" x="${c.x.toFixed(1)}" y="${(c.y-15).toFixed(1)}" text-anchor="middle">환기</text>`;
+  })();
+
+  // 비상 탈출구
+  (function(){ const c=isoPt(ISO_EXIT.gx,ISO_EXIT.gy,-4);
+    s += `<rect x="${(c.x-8).toFixed(1)}" y="${(c.y-11).toFixed(1)}" width="16" height="20" rx="2" fill="#0d2a18" stroke="#37d67a" stroke-width="1.6"/>`;
+    s += `<circle cx="${c.x.toFixed(1)}" cy="${(c.y-4).toFixed(1)}" r="2.4" fill="#37d67a"/>`;
+    s += `<text class="iso-fac-lbl" x="${c.x.toFixed(1)}" y="${(c.y+22).toFixed(1)}" text-anchor="middle">비상 탈출구</text>`;
+  })();
+
+  // 작업 지점(🔧)
+  (function(){ const m=isoMid(ISO_WORK[0],ISO_WORK[1]); const c=isoPt(m.gx,m.gy,m.z-8);
+    s += `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="10" fill="#0d2233" stroke="#8fb0c8" stroke-width="1.4"/>`;
+    s += `<text x="${c.x.toFixed(1)}" y="${(c.y+4).toFixed(1)}" text-anchor="middle" font-size="12">🔧</text>`;
+  })();
+
+  // 가스 센서(파란 다이아몬드)
+  ISO_SENSORS.forEach(([a,b])=>{ const m=isoMid(a,b); const c=isoPt(m.gx,m.gy,m.z-6); const r=6;
+    s += `<polygon points="${c.x.toFixed(1)},${(c.y-r).toFixed(1)} ${(c.x+r).toFixed(1)},${c.y.toFixed(1)} ${c.x.toFixed(1)},${(c.y+r).toFixed(1)} ${(c.x-r).toFixed(1)},${c.y.toFixed(1)}" fill="#2a7fd6" stroke="#bcdcff" stroke-width="1.2"/>`;
+  });
+
+  // 위험/주의 구역(반투명 원 + 라벨)
+  ISO_ZONES.forEach(zn=>{ const m=isoMid(zn.seg[0],zn.seg[1]); const c=isoPt(m.gx,m.gy,m.z-14);
+    const col = zn.lvl==='danger' ? '255,59,48' : '245,180,0';
+    s += `<ellipse class="iso-zone-disc" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" rx="78" ry="46" fill="rgba(${col},.16)" stroke="rgba(${col},.55)" stroke-width="1.4"/>`;
+    s += `<text x="${c.x.toFixed(1)}" y="${(c.y-6).toFixed(1)}" text-anchor="middle" font-size="16" fill="rgb(${col})">⚠</text>`;
+    s += `<text class="iso-zone-lbl" x="${c.x.toFixed(1)}" y="${(c.y+12).toFixed(1)}" text-anchor="middle" fill="rgb(${col})">위험 구역</text>`;
+    s += `<text class="iso-zone-gas" x="${c.x.toFixed(1)}" y="${(c.y+28).toFixed(1)}" text-anchor="middle" fill="rgb(${col})">${zn.label}</text>`;
+  });
+
+  // 범례(좌하단)
+  const lg = [['#2fd06e','출입구'],['#2a7fd6','가스 센서'],['255,59,48','위험 구역'],['#4bd0d0','환기 시설'],['#37d67a','비상 탈출구']];
+  let ly=520;
+  s += `<text class="iso-legend-h" x="34" y="${ly-14}">범례</text>`;
+  lg.forEach(([col,txt])=>{ const fill=col.includes(',')?`rgb(${col})`:col; s+=`<circle cx="40" cy="${ly-4}" r="5" fill="${fill}"/><text class="iso-legend-t" x="52" y="${ly}">${txt}</text>`; ly+=20; });
+
+  s += `<g id="iso-dyn"></g>`;   // 작업자(동적)
+  svgEl.innerHTML = s;
+}
+
+/* 아이소 지도의 작업자 마커(동적) — 상태색·심도 반영 */
+function renderIsoWorkers(list){
+  const g = $('#iso-dyn'); if(!g) return;
+  g.innerHTML = list.map((w,i)=>{
+    const m = workerMH.get(w.id); if(!m) return '';
+    const p = ISO_NODE[m.id]; if(!p) return '';
+    const dep = Math.max(0, Math.min(m.depth, curDepthOf(w.id, m.depth)));
+    const c = isoPt(p.gx, p.gy, dep*ISO.kd);
+    const ev = evalWorker(w);
+    const col = ev.level==='danger' ? '#ff3b30' : ev.level==='warn' ? '#f5b400' : '#22c55e';
+    const sel = selectedId===w.id ? ' is-sel' : '';
+    return `<g class="iso-mk${sel}" data-mk="${w.id}" id="iso-mk-${w.id}">
+      <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="14" fill="${col}" fill-opacity=".18" stroke="${col}" stroke-width="2.2"/>
+      <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="7" fill="${col}"/>
+      <text class="iso-mk-num" x="${c.x.toFixed(1)}" y="${(c.y+4).toFixed(1)}" text-anchor="middle">${i+1}</text>
+      <text class="iso-mk-name" x="${c.x.toFixed(1)}" y="${(c.y-19).toFixed(1)}" text-anchor="middle">${escapeHtml(w.name)}</text>
+    </g>`;
+  }).join('');
+}
+
+/* 단면도 ↔ 입체지도 역할 반전 */
+function swapMap(){
+  const st = $('#stage'); if(!st) return;
+  const toIso = st.classList.contains('mode-section');
+  st.classList.toggle('mode-section', !toIso);
+  st.classList.toggle('mode-iso', toIso);
+  const sw = $('#minimap-swap'); if(sw) sw.textContent = '⇄ ' + (toIso ? '단면도' : '입체 3D') + ' 보기';
+  if(selectedId && !$('#stage-detail').hidden) positionAR();
+}
+
+/* 선택 작업자 마커의 스테이지 내 위치(%) — 활성 지도 기준 */
+function selMarkerPct(){
+  if(!selectedId) return null;
+  if($('#stage') && $('#stage').classList.contains('mode-iso')){
+    const el = document.getElementById('iso-mk-'+selectedId), stg = $('.stage');
+    if(!el || !stg) return null;
+    const r = el.getBoundingClientRect(), sb = stg.getBoundingClientRect();
+    if(!r.width) return null;
+    return { x:(r.left + r.width/2 - sb.left)/sb.width*100, y:(r.top + r.height/2 - sb.top)/sb.height*100 };
+  }
+  const p = wpos.get(selectedId); return p ? { x:p.x, y:p.y } : null;
+}
+
 /* 작업자 → 맨홀 배정 (입장 시 정한 맨홀 w.mh 유지 → 안정적) */
 function assignManholes(list){
   workerMH = new Map();
@@ -535,6 +719,9 @@ function renderDashboard(structure){
   const key = list.map(w=>w.id).join(',');
   if(structure || key !== lastInsideKey){ buildMarkers(list); lastInsideKey = key; }
 
+  // 선택한 작업자가 퇴장·복귀로 사라지면 상세(AR)를 닫는다 (자동 표시는 하지 않음)
+  if(selectedId && !list.some(w=>w.id===selectedId)) closeDetail();
+
   list.forEach(w=>{
     const g = simGas(w), vr = simVitals(w), ev = evalWorker(w);
     const el = $(`#mk-${w.id}`); if(!el) return;
@@ -547,7 +734,7 @@ function renderDashboard(structure){
     const nt = $('.mk__note',el); nt.textContent = ev.note; nt.className = 'mk__note is-'+ev.level;
   });
 
-  renderEnvPanel(list);
+  renderIsoWorkers(list);   // 입체지도 작업자 마커도 동기화
   renderAlertPanel();
   if(selectedId) syncDetail();
 }
@@ -575,31 +762,6 @@ function buildMarkers(list){
   }).join('');
 }
 
-/* 좌상단 현장 정보 */
-function renderEnvPanel(list){
-  const c = {ok:0,warn:0,danger:0};
-  const sum = {o2:0,h2s:0,co:0,lel:0};
-  const n = list.length;
-  list.forEach(w=>{
-    c[evalWorker(w).level]++;
-    const g = gasCache.get(w.id) || simGas(w);
-    sum.o2+=g.o2; sum.h2s+=g.h2s; sum.co+=g.co; sum.lel+=g.lel;
-  });
-  $('#env-inside').textContent = n;
-  $('#env-ok').textContent = c.ok;
-  $('#env-warn').textContent = c.warn;
-  $('#env-danger').textContent = c.danger;
-  const setGas=(id,kind,val,dec)=>{
-    const e = $(id);
-    if(!n){ e.textContent='--'; e.parentElement.className='env-gas'; return; }
-    e.textContent = val.toFixed(dec);
-    e.parentElement.className = 'env-gas is-'+gasStatus(kind,val);
-  };
-  setGas('#env-o2', 'o2',  n?sum.o2/n:0, 1);
-  setGas('#env-h2s','h2s', n?sum.h2s/n:0, 0);
-  setGas('#env-co', 'co',  n?sum.co/n:0, 0);
-  setGas('#env-lel','lel', n?sum.lel/n:0, 1);
-}
 
 /* 우상단 경고 패널 (카운트는 매번, 리스트는 변경 시에만) */
 function renderAlertPanel(){
@@ -734,7 +896,7 @@ function updatePov(t){
 
 /* AR 카드를 마커(현재 위치)의 대각선 위쪽에 배치 */
 function positionAR(){
-  const p=wpos.get(selectedId); if(!p) return;
+  const p=selMarkerPct(); if(!p) return;
   const S=$('.stage').getBoundingClientRect();
   const el=$('#stage-detail');
   const cw=el.offsetWidth, ch=el.offsetHeight, gap=14;
@@ -749,7 +911,7 @@ function positionAR(){
 }
 /* 마커 ↔ 카드 연결선 갱신(이동 추종) */
 function updateARLink(){
-  const p=wpos.get(selectedId); if(!p) return;
+  const p=selMarkerPct(); if(!p) return;
   const S=$('.stage').getBoundingClientRect();
   const el=$('#stage-detail');
   const cl=el.offsetLeft, ct=el.offsetTop, cw=el.offsetWidth, ch=el.offsetHeight;
@@ -1449,6 +1611,16 @@ function bindEvents(){
     if(rt){ recordTab = rt.dataset.rtab; renderRecords(); }
   });
 
+  // 미니맵 최소화(─) / 복원(🗺) + 비활성 지도 탭 → 역할 반전
+  $('#stage').addEventListener('click', e=>{
+    if(e.target.closest('.maplayer__min')){ $('#stage').classList.add('minimap-off'); return; }
+    const layer = e.target.closest('.maplayer'); if(!layer) return;
+    const miniIsIso = $('#stage').classList.contains('mode-section');
+    const clickedIso = layer.id === 'layer-iso';
+    if(clickedIso === miniIsIso) swapMap();   // 미니맵 레이어를 눌렀을 때만 전환
+  });
+  $('#minimap-restore').addEventListener('click', ()=> $('#stage').classList.remove('minimap-off'));
+
   // 대시보드 상세 팝오버
   $('#sd-close').addEventListener('click', closeDetail);
   $('#sd-exit').addEventListener('click', ()=>{ if(selectedId){ requestReturn(selectedId); syncDetail(); } });
@@ -1536,6 +1708,7 @@ function setByPath(path,val){
 /* ---------- 부팅 ---------- */
 function boot(){
   buildSewer();
+  buildIso();
   bindEvents();
   switchView('home');            // 로그인 후 기본 진입 화면
   if(!state.session) showLogin();  // 미로그인 → 로그인 게이트(스플래시 뒤)
