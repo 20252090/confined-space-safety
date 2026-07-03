@@ -163,7 +163,9 @@
               <span id="ar-h2s-w">H₂S <b id="ar-h2s">-</b></span>
               <span id="ar-co-w">CO <b id="ar-co">-</b></span>
               <span id="ar-lel-w">LEL <b id="ar-lel">-</b></span>
-              <span class="ar-strip__v">심박 <b id="ar-bpm">--</b></span>
+              <span class="ar-strip__v" id="ar-bpm-w">심박 <b id="ar-bpm">--</b></span>
+              <span class="ar-strip__v" id="ar-spo2-w">SpO₂ <b id="ar-spo2">--</b>%</span>
+              <span class="ar-strip__v" id="ar-temp-w">체온 <b id="ar-temp">--</b>°</span>
               <span class="ar-strip__v">심도 <b id="ar-depthv">--</b>m</span>
             </div>
           </div>
@@ -248,6 +250,19 @@
           <label class="field field--sm"><span class="field__label">CO (ppm)</span><input type="number" id="th-co" step="1" /></label>
           <label class="field field--sm"><span class="field__label">LEL (%)</span><input type="number" id="th-lel" step="1" /></label>
         </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group__title">생체 임계치 (안전/주의/위험 분류)</h3>
+        <div class="thresh-grid">
+          <label class="field field--sm"><span class="field__label">심박 주의 (bpm↑)</span><input type="number" id="vt-bpmwarn" step="1" /></label>
+          <label class="field field--sm"><span class="field__label">심박 위험 (bpm↑)</span><input type="number" id="vt-bpmdanger" step="1" /></label>
+          <label class="field field--sm"><span class="field__label">체온 주의 (℃)</span><input type="number" id="vt-tempwarn" step="0.1" /></label>
+          <label class="field field--sm"><span class="field__label">체온 위험 (℃)</span><input type="number" id="vt-tempdanger" step="0.1" /></label>
+          <label class="field field--sm"><span class="field__label">SpO₂ 주의 (%↓)</span><input type="number" id="vt-spo2warn" step="1" /></label>
+          <label class="field field--sm"><span class="field__label">SpO₂ 위험 (%↓)</span><input type="number" id="vt-spo2danger" step="1" /></label>
+        </div>
+        <p class="field__hint">심박·체온·산소포화도 중 하나라도 임계치를 넘으면 해당 작업자가 주의/위험으로 분류됩니다.</p>
       </div>
 
       <div class="settings-group">

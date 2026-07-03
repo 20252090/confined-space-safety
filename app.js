@@ -35,6 +35,13 @@ function defaultState(){
       graceSec: 60,
       gasMode: 'normal',   // normal | alarm
       thresholds: { o2Low:18, o2High:23.5, h2s:10, co:30, lel:10 },
+      // 생체(바이탈) 임계치 — 안전/주의/위험 분류 기준
+      vitals: {
+        bpmWarn:110,  bpmDanger:125,   // 심박(bpm) 상한
+        bpmLowWarn:50, bpmLowDanger:40, // 심박 하한(서맥/의식저하)
+        tempWarn:37.6, tempDanger:38.3, // 심부체온(℃)
+        spo2Warn:94,  spo2Danger:90,    // 산소포화도(%)
+      },
     },
   };
 }
@@ -50,7 +57,10 @@ function load(){
     // 얕은 병합 + settings/checklist 깊은 병합으로 구버전 호환
     return {
       ...d, ...parsed,
-      settings:{ ...d.settings, ...(parsed.settings||{}), thresholds:{ ...d.settings.thresholds, ...((parsed.settings||{}).thresholds||{}) } },
+      settings:{ ...d.settings, ...(parsed.settings||{}),
+        thresholds:{ ...d.settings.thresholds, ...((parsed.settings||{}).thresholds||{}) },
+        vitals:{ ...d.settings.vitals, ...((parsed.settings||{}).vitals||{}) },
+      },
       checklist:{ ...d.checklist, ...(parsed.checklist||{}) },
     };
   }catch(e){ console.warn('상태 로드 실패, 초기화합니다.', e); return defaultState(); }
@@ -104,16 +114,66 @@ function simGas(worker){
 }
 function clamp(v,min,max){ return Math.min(max,Math.max(min,v)); }
 
-/* 작업자 바이탈(심박/체온) 시뮬레이션 — 상태에 따라 상승 */
-const vitalsCache = new Map();
-function simVitals(w, level){
+/* 작업자 생체신호(심박·체온·산소포화도) 시뮬레이션
+   — 화면 표시용 장식이 아니라, 상태 분류(안전/주의/위험)의 실제 입력값.
+   주변 가스(저산소·유해가스)와 체류 시간에 따라 스스로 변한다. */
+const vitalsCache = new Map();   // id -> {bpm,temp,spo2} (부드럽게 변하는 실수 상태)
+
+function seedVitals(w){
   let v = vitalsCache.get(w.id);
-  if(!v){ v = { bpm:82, temp:36.6 }; vitalsCache.set(w.id, v); }
-  const tBpm  = level==='danger'?122 : level==='warn'?100 : 82;
-  const tTemp = level==='danger'?37.5 : level==='warn'?37.0 : 36.6;
-  v.bpm  += (tBpm -v.bpm )*0.2 + (Math.random()-0.5)*2;
-  v.temp += (tTemp-v.temp)*0.1 + (Math.random()-0.5)*0.05;
-  return { bpm:Math.round(clamp(v.bpm,60,150)), temp:clamp(v.temp,35.5,39).toFixed(1) };
+  if(!v){ v = { bpm:78, temp:36.6, spo2:98 }; vitalsCache.set(w.id, v); }
+  return v;
+}
+/* 환경 스트레스 지수 0~1 — 심박/체온↑, 산소포화도↓ 를 유발 */
+function bodyStress(w){
+  const th = state.settings.thresholds;
+  const g  = gasCache.get(w.id) || simGas(w);
+  const o2Def = clamp((th.o2Low + 2 - g.o2) / 4, 0, 1);                 // 산소 결핍
+  const toxic = clamp((Math.max(g.h2s/th.h2s, g.co/th.co, g.lel/th.lel) - 0.5) / 0.5, 0, 1); // 유해가스
+  const dwell = clamp(((now()-(w.enteredAt||now()))/60000) / 90, 0, 1) * 0.18;               // 장시간 체류(최대 +0.18)
+  return clamp(Math.max(o2Def, toxic) + dwell, 0, 1);
+}
+/* 한 스텝 진행 후 반올림한 측정값 반환 */
+function simVitals(w){
+  const v = seedVitals(w);
+  const S = bodyStress(w);
+  const tBpm  = 78 + S*52;      // 78 → 130
+  const tTemp = 36.6 + S*1.7;   // 36.6 → 38.3
+  const tSpo2 = 98 - S*13;      // 98 → 85
+  v.bpm  += (tBpm -v.bpm )*0.15 + (Math.random()-0.5)*1.6;
+  v.temp += (tTemp-v.temp)*0.08 + (Math.random()-0.5)*0.04;
+  v.spo2 += (tSpo2-v.spo2)*0.12 + (Math.random()-0.5)*0.4;
+  return readVitals(w);
+}
+function readVitals(w){
+  const v = seedVitals(w);
+  return { bpm:Math.round(clamp(v.bpm,55,165)), temp:+clamp(v.temp,35.5,40).toFixed(1), spo2:Math.round(clamp(v.spo2,80,100)) };
+}
+
+/* 개별 생체지표 상태: 'ok' | 'warn' | 'danger' */
+function bpmStat(bpm){ const vt=state.settings.vitals;
+  if(bpm>=vt.bpmDanger || bpm<=vt.bpmLowDanger) return 'danger';
+  if(bpm>=vt.bpmWarn   || bpm<=vt.bpmLowWarn)   return 'warn';
+  return 'ok';
+}
+function tempStat(t){ const vt=state.settings.vitals; return t>=vt.tempDanger?'danger':t>=vt.tempWarn?'warn':'ok'; }
+function spo2Stat(s){ const vt=state.settings.vitals; return s<=vt.spo2Danger?'danger':s<=vt.spo2Warn?'warn':'ok'; }
+const worseLevel = (a,b)=> (a==='danger'||b==='danger')?'danger' : (a==='warn'||b==='warn')?'warn' : 'ok';
+
+/* 작업자 생체 종합 상태 → {level, note, reading} */
+function vitalStatus(w){
+  const r = readVitals(w);
+  const parts = [
+    { s:bpmStat(r.bpm),   d:r.bpm >= state.settings.vitals.bpmWarn ? '심박 급상승' : '서맥(심박 저하)' },
+    { s:tempStat(r.temp), d:'체온 상승' },
+    { s:spo2Stat(r.spo2), d:'산소포화도 저하' },
+  ];
+  let level='ok', note='';
+  // danger 우선, 없으면 warn 사유를 노트로
+  const dg = parts.find(p=>p.s==='danger'); const wn = parts.find(p=>p.s==='warn');
+  parts.forEach(p=>{ level = worseLevel(level, p.s); });
+  if(dg) note = dg.d; else if(wn) note = wn.d;
+  return { level, note, reading:r };
 }
 
 /* 개별 가스 상태: 'ok' | 'warn' | 'danger' */
@@ -137,15 +197,21 @@ function evalWorker(w){
   const gasDanger = gasLevels.includes('danger');
   const gasWarn   = gasLevels.includes('warn');
 
+  const vs = vitalStatus(w);   // 생체신호 종합
+
   const intervalMs = state.settings.intervalMin*60*1000;
   const graceMs    = state.settings.graceSec*1000;
   const sinceResp  = now() - (w.lastResponseAt || w.enteredAt || now());
   const overdue    = sinceResp - intervalMs;   // >0 이면 확인 요청 시점 경과
 
+  // ── 위험(danger) 판정: 가스 / 미응답 / 생체 이상 ──
   if(gasDanger) return { level:'danger', note:'가스 임계치 초과' };
   if(overdue > graceMs) return { level:'danger', note:'안전확인 미응답' };
+  if(vs.level==='danger') return { level:'danger', note:'생체 위험 · '+vs.note };
+  // ── 주의(warn) 판정 ──
   if(overdue > 0) return { level:'warn', note:'안전확인 요청 중', needRespond:true, remain:Math.ceil((graceMs-overdue)/1000) };
   if(gasWarn) return { level:'warn', note:'가스 농도 주의' };
+  if(vs.level==='warn') return { level:'warn', note:'생체 주의 · '+vs.note };
 
   const untilCheck = Math.ceil((intervalMs - sinceResp)/1000);
   return { level:'ok', note:`다음 확인 ${fmtDur(untilCheck)}` };
@@ -199,6 +265,11 @@ const WATER = 2.6;      // 관 바닥 물 높이(%)
 const SHAFT_HW = 1.9;   // 맨홀 수직구 반폭(%)
 const depthY = d => SURF + d*SCALE;    // 심도(m) → 관 바닥(invert) 세로위치(%)
 
+/* 가로 축척: 종단면도 폭(맨홀 A~J = x 14~78%)에 실제 거리 합(ΣSEG_DIST)이 대응
+   → 1% ≈ 3.7 m. 세로는 1% = 1/SCALE m (=0.1 m). 이동 속도/반경을 실제 m 기준으로 환산 */
+const M_PER_PCT_X = 3.7;               // 가로 1% 당 실제 거리(m)
+const PCT_PER_M_X = 1 / M_PER_PCT_X;   // 실제 1m 당 가로 %
+
 const MANHOLES = [
   { id:'A', label:'MH-01', x:14, depth:2.4 },
   { id:'B', label:'MH-02', x:20, depth:2.9 },
@@ -212,6 +283,22 @@ const MANHOLES = [
   { id:'J', label:'MH-10', x:78, depth:6.3 },
 ];
 const MH_BY_ID = Object.fromEntries(MANHOLES.map(m=>[m.id,m]));
+
+/* x위치(%) → 그 지점의 관로 심도(m) : 인접 맨홀 사이를 선형 보간(관로 경사 반영) */
+function depthAtX(x){
+  const P = MANHOLES;
+  if(x <= P[0].x) return P[0].depth;
+  if(x >= P[P.length-1].x) return P[P.length-1].depth;
+  for(let i=0;i<P.length-1;i++){
+    if(x>=P[i].x && x<=P[i+1].x){
+      const t=(x-P[i].x)/(P[i+1].x-P[i].x);
+      return P[i].depth + t*(P[i+1].depth-P[i].depth);
+    }
+  }
+  return P[0].depth;
+}
+/* x위치(%) → 관로 내부 중심의 세로위치(%) : 작업자는 항상 이 선 위(관로 안)에 머문다 */
+const pipeCenterY = x => depthY(depthAtX(x)) - TUBE/2;
 const MH_CHAIN = MANHOLES.map(m=>m.id);
 const WORKER_SLOTS = ['A','D','G','B','E','C','F'];  // 서로 벌려 배치(겹침 방지)
 let workerMH = new Map();            // workerId -> 배정된 맨홀
@@ -305,9 +392,13 @@ function freeSlot(){
 
 /* 작업자 실시간 위치/이동 상태 (입구 하강 + 무작위 이동/정지) */
 const wpos = new Map();                 // id -> {x,y,cx,cy,tx,ty,st,until}
-const DESCEND_SPEED = 6;                // 하강 속도(%/s)
-const MOVE_SPEED    = 3.2;              // 이동 속도(%/s)
-const WANDER_X = 4, WANDER_Y = 2;       // 작업 반경(%)
+/* 실제 사람 이동 속도 기준(밀폐공간 저속 작업) */
+const CLIMB_MPS = 0.35;                 // 사다리 승·하강 속도(m/s)
+const WALK_MPS  = 0.4;                  // 관로 내 이동 속도(m/s)
+const DESCEND_SPEED = CLIMB_MPS * SCALE;        // 세로 %/s  (0.35 m/s → 3.5 %/s)
+const MOVE_SPEED    = WALK_MPS * PCT_PER_M_X;   // 가로 %/s  (0.4 m/s → ~0.11 %/s)
+const WANDER_X = 6 * PCT_PER_M_X;       // 관로 따라 좌우 작업 반경 ≈ ±6 m
+const WANDER_Y = 0.15 * SCALE;          // 관 내부 상하 여유 ≈ ±0.15 m
 const rnd = (a,b)=> a + Math.random()*(b-a);
 
 function ensureWpos(id, mh){
@@ -333,12 +424,14 @@ function renderDashboard(structure){
   if(structure || key !== lastInsideKey){ buildMarkers(list); lastInsideKey = key; }
 
   list.forEach(w=>{
-    const g = simGas(w), ev = evalWorker(w);
+    const g = simGas(w), vr = simVitals(w), ev = evalWorker(w);
     const el = $(`#mk-${w.id}`); if(!el) return;
     el.className = `mk is-${ev.level}`;
     const mh = workerMH.get(w.id);
     $('.mk__meta',el).textContent = `${mh?mh.label:''} · 심도 ${curDepthOf(w.id, mh?mh.depth:0).toFixed(1)}m · ${fmtDur((now()-w.enteredAt)/1000)}`;
     $('.mk__gas',el).textContent  = `O₂ ${g.o2.toFixed(1)} · H₂S ${g.h2s.toFixed(0)} · CO ${g.co.toFixed(0)}`;
+    const vt = $('.mk__vital',el);
+    vt.innerHTML = `심박 <b class="is-${bpmStat(vr.bpm)}">${vr.bpm}</b> · SpO₂ <b class="is-${spo2Stat(vr.spo2)}">${vr.spo2}</b> · 체온 <b class="is-${tempStat(vr.temp)}">${vr.temp}°</b>`;
     const nt = $('.mk__note',el); nt.textContent = ev.note; nt.className = 'mk__note is-'+ev.level;
   });
 
@@ -363,6 +456,7 @@ function buildMarkers(list){
         <span class="mk__name">${escapeHtml(w.name)}</span>
         <span class="mk__meta"></span>
         <span class="mk__gas"></span>
+        <span class="mk__vital"></span>
         <span class="mk__note is-ok"></span>
       </span>
     </button>`;
@@ -473,7 +567,11 @@ function animateWorkers(t){
       p.y=Math.min(p.cy, p.y + DESCEND_SPEED*dt);
       if(p.y>=p.cy-0.15){ p.y=p.cy; p.st='pause'; p.until=t+rnd(1500,3500); }
     } else if(p.st==='pause'){
-      if(t>=p.until){ p.tx=p.cx+rnd(-WANDER_X,WANDER_X); p.ty=p.cy+rnd(-WANDER_Y,WANDER_Y); p.st='move'; }
+      if(t>=p.until){
+        p.tx = p.cx + rnd(-WANDER_X, WANDER_X);
+        p.ty = pipeCenterY(p.tx) + rnd(-WANDER_Y, WANDER_Y);  // 관로 경사를 따라가 항상 관 안에 머문다
+        p.st='move';
+      }
     } else {
       const dx=p.tx-p.x, dy=p.ty-p.y, d=Math.hypot(dx,dy), step=MOVE_SPEED*dt;
       if(d<=step){ p.x=p.tx; p.y=p.ty; p.st='pause'; p.until=t+rnd(2000,5000); }
@@ -513,8 +611,14 @@ function syncDetail(){
   setG('#ar-co-w', '#ar-co', 'co',  g.co,  0);
   setG('#ar-lel-w','#ar-lel','lel', g.lel, 0);
 
-  // 바이탈
-  $('#ar-bpm').textContent    = simVitals(w, ev.level).bpm;
+  // 생체신호 (심박·산소포화도·체온) — 색상으로 등급 표시
+  const vr = readVitals(w);
+  $('#ar-bpm').textContent  = vr.bpm;
+  $('#ar-spo2').textContent = vr.spo2;
+  $('#ar-temp').textContent = vr.temp;
+  $('#ar-bpm-w').className  = 'ar-strip__v is-'+bpmStat(vr.bpm);
+  $('#ar-spo2-w').className = 'ar-strip__v is-'+spo2Stat(vr.spo2);
+  $('#ar-temp-w').className = 'ar-strip__v is-'+tempStat(vr.temp);
   $('#ar-depthv').textContent = curDepthOf(selectedId, mh?mh.depth:0).toFixed(1);
 
   // 경고
@@ -628,6 +732,12 @@ function renderSettings(){
   $('#th-h2s').value    = s.thresholds.h2s;
   $('#th-co').value     = s.thresholds.co;
   $('#th-lel').value    = s.thresholds.lel;
+  $('#vt-bpmwarn').value    = s.vitals.bpmWarn;
+  $('#vt-bpmdanger').value  = s.vitals.bpmDanger;
+  $('#vt-tempwarn').value   = s.vitals.tempWarn;
+  $('#vt-tempdanger').value = s.vitals.tempDanger;
+  $('#vt-spo2warn').value   = s.vitals.spo2Warn;
+  $('#vt-spo2danger').value = s.vitals.spo2Danger;
 }
 
 /* ============================ 5. 액션 ============================ */
@@ -757,6 +867,12 @@ function autoDetectAlarms(){
     if(ev.level==='danger' && ev.note==='안전확인 미응답'){
       if(!alarmedSet.has(respKey)){ alarmedSet.add(respKey); addAlarm('danger','안전확인 미응답 경보',`${w.name} · ${w.location||''}`); flashToast(`${w.name} 안전확인 미응답!`); }
     } else if(ev.level!=='danger') alarmedSet.delete(respKey);
+
+    const vitalKey = w.id+'::vital';
+    const vs = vitalStatus(w);
+    if(vs.level==='danger'){
+      if(!alarmedSet.has(vitalKey)){ alarmedSet.add(vitalKey); addAlarm('danger','생체신호 위험 경보',`${w.name} · ${vs.note}`); flashToast(`${w.name} 생체신호 위험!`); }
+    } else alarmedSet.delete(vitalKey);
   });
 }
 let lastFlash = 0;
@@ -878,6 +994,12 @@ function bindEvents(){
   bindNum('#th-h2s','settings.thresholds.h2s', parseFloat);
   bindNum('#th-co','settings.thresholds.co', parseFloat);
   bindNum('#th-lel','settings.thresholds.lel', parseFloat);
+  bindNum('#vt-bpmwarn','settings.vitals.bpmWarn', v=>parseInt(v)||110);
+  bindNum('#vt-bpmdanger','settings.vitals.bpmDanger', v=>parseInt(v)||125);
+  bindNum('#vt-tempwarn','settings.vitals.tempWarn', parseFloat);
+  bindNum('#vt-tempdanger','settings.vitals.tempDanger', parseFloat);
+  bindNum('#vt-spo2warn','settings.vitals.spo2Warn', v=>parseInt(v)||94);
+  bindNum('#vt-spo2danger','settings.vitals.spo2Danger', v=>parseInt(v)||90);
   $('#set-gasmode').addEventListener('change', e=>{
     state.settings.gasMode = e.target.value; save();
     toast(e.target.value==='alarm'?'경보 테스트 모드로 전환했습니다.':'정상 모드로 전환했습니다.', e.target.value==='alarm'?'danger':'ok');

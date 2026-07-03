@@ -389,6 +389,10 @@ h1,h2,h3{ margin:0; }
 .mk__name{ display:block; font-size:14px; font-weight:800; color:#fff; }
 .mk__meta{ display:block; font-size:12px; color:var(--txt-2); margin-top:1px; font-variant-numeric:tabular-nums; }
 .mk__gas{ display:block; font-size:11px; color:var(--txt-3); font-variant-numeric:tabular-nums; }
+.mk__vital{ display:block; font-size:11px; color:var(--txt-3); font-variant-numeric:tabular-nums; margin-top:1px; }
+.mk__vital b{ color:var(--txt-2); font-weight:700; }
+.mk__vital b.is-warn{ color:var(--warn); }
+.mk__vital b.is-danger{ color:#ff6b63; }
 .mk__note{ display:block; font-size:11px; font-weight:800; margin-top:2px; }
 .mk__note.is-ok{ color:var(--ok); }
 .mk__note.is-warn{ color:var(--warn); }
