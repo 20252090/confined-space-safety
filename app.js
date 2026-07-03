@@ -392,13 +392,12 @@ function freeSlot(){
 
 /* 작업자 실시간 위치/이동 상태 (입구 하강 + 무작위 이동/정지) */
 const wpos = new Map();                 // id -> {x,y,cx,cy,tx,ty,st,until}
-/* 실제 사람 이동 속도 기준(밀폐공간 저속 작업) */
-const CLIMB_MPS = 0.35;                 // 사다리 승·하강 속도(m/s)
-const WALK_MPS  = 0.4;                  // 관로 내 이동 속도(m/s)
-const DESCEND_SPEED = CLIMB_MPS * SCALE;        // 세로 %/s  (0.35 m/s → 3.5 %/s)
-const MOVE_SPEED    = WALK_MPS * PCT_PER_M_X;   // 가로 %/s  (0.4 m/s → ~0.11 %/s)
-const WANDER_X = 6 * PCT_PER_M_X;       // 관로 따라 좌우 작업 반경 ≈ ±6 m
-const WANDER_Y = 0.15 * SCALE;          // 관 내부 상하 여유 ≈ ±0.15 m
+/* 이동 파라미터(화면상 또렷하게 보이도록 조정) */
+const DESCEND_SPEED = 5.0;              // 입구→작업심도 하강 속도(세로 %/s)
+const MOVE_SPEED    = 2.4;              // 관로 내 이동 속도(가로 %/s) — 걸어다니는 느낌
+const WANDER_X = 3.6;                   // 작업 반경(맨홀 기준 좌우 ±%)
+const WANDER_Y = 1.4;                   // 관 내부 상하 여유(±%)
+const WANDER_MIN_X = 11, WANDER_MAX_X = 53;   // 이동 허용 구간(좌우 패널·가장자리 회피)
 const rnd = (a,b)=> a + Math.random()*(b-a);
 
 function ensureWpos(id, mh){
@@ -568,7 +567,7 @@ function animateWorkers(t){
       if(p.y>=p.cy-0.15){ p.y=p.cy; p.st='pause'; p.until=t+rnd(1500,3500); }
     } else if(p.st==='pause'){
       if(t>=p.until){
-        p.tx = p.cx + rnd(-WANDER_X, WANDER_X);
+        p.tx = clamp(p.cx + rnd(-WANDER_X, WANDER_X), WANDER_MIN_X, WANDER_MAX_X);
         p.ty = pipeCenterY(p.tx) + rnd(-WANDER_Y, WANDER_Y);  // 관로 경사를 따라가 항상 관 안에 머문다
         p.st='move';
       }
