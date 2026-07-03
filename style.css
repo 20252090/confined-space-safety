@@ -32,10 +32,11 @@
   --tap:       56px;      /* 최소 터치 높이 */
   --radius:    14px;
   --radius-sm: 10px;
+  --statusbar-h: 22px;    /* 태블릿 상태바(시간·배터리) */
   --topbar-h:  62px;
   --strip-h:   44px;      /* 상단 상시 상태 스트립 */
   --tabbar-h:  74px;
-  --header-h:  calc(var(--topbar-h) + var(--strip-h));
+  --header-h:  calc(var(--statusbar-h) + var(--topbar-h) + var(--strip-h));
 
   --safe-top:    env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -45,7 +46,9 @@
 *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 html,body{ margin:0; padding:0; }
 body{
-  background:#05070a;                 /* 태블릿 바깥(책상) 배경 */
+  /* 태블릿 바깥 — 밝은 실내(주간) 분위기 */
+  background:
+    radial-gradient(95% 75% at 50% 6%, #ffffff 0%, #f6f8fb 60%, #eceff3 100%);
   color:var(--txt);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic","맑은 고딕",
               "Apple SD Gothic Neo",system-ui,sans-serif;
@@ -56,32 +59,73 @@ body{
   min-height:100vh;
   display:flex; align-items:center; justify-content:center;
   padding:14px;
+  position:relative;
+}
+/* 배경 블루프린트 그리드 (중앙으로 페이드) */
+body::before{
+  content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+  background-image:
+    linear-gradient(rgba(40,70,110,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(40,70,110,.05) 1px, transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask:radial-gradient(75% 62% at 50% 42%, #000, transparent 80%);
+  mask:radial-gradient(75% 62% at 50% 42%, #000, transparent 80%);
 }
 
 /* ===================== 태블릿 프레임 ===================== */
 .device{
-  position:relative;
+  position:relative; z-index:1;
   width:min(96vw, calc((100vh - 28px) * 4 / 3));
   max-width:1180px;
   aspect-ratio:4 / 3;
-  background:#0f1216;
-  border:1px solid #23262c;
-  border-radius:30px;
-  padding:16px;
-  box-shadow:0 30px 80px rgba(0,0,0,.6), inset 0 0 0 2px #05070a;
+  padding:18px;
+  border-radius:38px;
+  /* 금속 프레임 질감 */
+  background:linear-gradient(150deg,#2a2e35 0%,#15171c 42%,#0c0e12 100%);
+  border:1px solid #3a3f49;
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.10),
+    inset 0 -2px 6px rgba(0,0,0,.7),
+    0 34px 70px rgba(30,45,70,.35),
+    0 12px 30px rgba(30,45,70,.25);
 }
+/* 측면 물리 버튼 (전원 · 볼륨) */
+.device::before{
+  content:""; position:absolute; right:-3px; top:17%;
+  width:3px; height:46px; border-radius:0 4px 4px 0;
+  background:linear-gradient(#33373f,#171920); box-shadow:1px 0 2px rgba(0,0,0,.5);
+}
+.device::after{
+  content:""; position:absolute; right:-3px; top:33%;
+  width:3px; height:86px; border-radius:0 4px 4px 0;
+  background:linear-gradient(#33373f,#171920); box-shadow:1px 0 2px rgba(0,0,0,.5);
+}
+/* 전면 카메라 렌즈 */
 .device__cam{
-  position:absolute; top:7px; left:50%; transform:translateX(-50%);
-  width:8px; height:8px; border-radius:50%;
-  background:#2b2f36; box-shadow:0 0 0 2px #16191e; z-index:2;
+  position:absolute; top:8px; left:50%; transform:translateX(-50%);
+  width:9px; height:9px; border-radius:50%;
+  background:radial-gradient(circle at 35% 32%, #4a5560 0 22%, #10131a 62%);
+  box-shadow:0 0 0 2px #0c0e12, 0 0 0 3px #2f333b; z-index:3;
 }
 /* .screen: 내부 position:fixed 요소들의 컨테이닝 블록(transform) + 화면 클리핑 */
 .screen{
   position:relative; width:100%; height:100%;
-  border-radius:15px; overflow:hidden;
+  border-radius:18px; overflow:hidden;
   background:var(--bg);
   transform:translateZ(0);
+  box-shadow:0 0 0 2px #05070a, inset 0 0 22px rgba(0,0,0,.4);
 }
+/* 화면 유리 반사(글레어) — 아주 옅게, 로그인/스플래시 아래 */
+.screen::after{
+  content:""; position:absolute; top:0; left:0; right:0; height:46%;
+  z-index:105; pointer-events:none; border-radius:18px 18px 0 0;
+  background:linear-gradient(158deg, rgba(255,255,255,.055) 0%, rgba(255,255,255,.015) 40%, transparent 72%);
+}
+/* 기기처럼 은은한 스크롤바 */
+.screen *{ scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.16) transparent; }
+.screen *::-webkit-scrollbar{ width:6px; height:6px; }
+.screen *::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.16); border-radius:6px; }
+.screen *::-webkit-scrollbar-track{ background:transparent; }
 
 /* ===================== 스플래시(부팅) 화면 ===================== */
 .splash{
@@ -219,6 +263,60 @@ body.sos-active .statstrip__inside b{ color:#fff; }
 }
 /* 넓은 태블릿에서 폼·목록은 가운데 정렬 폭 제한 (관제 뷰는 풀블리드) */
 .view:not(.view--stage){ max-width:640px; margin-inline:auto; }
+
+/* ===================== 로그인 ===================== */
+.login{
+  position:absolute; inset:0; z-index:110;
+  display:flex; align-items:center; justify-content:center;
+  padding:24px 18px calc(var(--safe-bottom) + 24px);
+  background:radial-gradient(120% 90% at 50% 30%, #12233a 0%, var(--bg) 58%, #05070a 100%);
+  overflow-y:auto;
+}
+.login__card{
+  width:100%; max-width:400px;
+  background:var(--bg-1); border:1px solid var(--line); border-radius:20px;
+  padding:24px 22px; box-shadow:0 20px 60px rgba(0,0,0,.5);
+}
+.login__brand{ font-size:14px; font-weight:800; color:var(--txt-2); }
+.login__title{ font-size:26px; font-weight:900; margin-top:8px; letter-spacing:-.5px; }
+.login__lead{ font-size:14px; color:var(--txt-3); margin:6px 0 20px; line-height:1.5; }
+.login .field{ margin-bottom:16px; }
+.login__btn{ margin-top:6px; }
+
+/* ===================== 홈 ===================== */
+.home-hero{
+  background:linear-gradient(135deg, var(--brand-bg), var(--bg-1));
+  border:1px solid #1d3a5f; border-radius:var(--radius);
+  padding:20px 18px; margin-bottom:16px;
+}
+.home-hero__hi{ font-size:22px; font-weight:800; }
+.home-hero__hi b{ color:var(--brand); }
+.home-hero__site{ display:flex; align-items:center; gap:7px; font-size:15px; font-weight:700; color:var(--txt-2); margin-top:8px; }
+.home-hero__pin{ width:10px; height:10px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); background:var(--brand); flex:0 0 auto; }
+.home-hero__date{ font-size:13px; color:var(--txt-3); margin-top:8px; font-variant-numeric:tabular-nums; }
+
+.home-status{ display:grid; grid-template-columns:1.4fr 1fr 1fr 1fr; gap:10px; margin-bottom:16px; }
+.home-stat{ background:var(--bg-1); border:1px solid var(--line); border-radius:var(--radius-sm); padding:12px 8px; text-align:center; }
+.home-stat b{ display:block; font-size:26px; font-weight:900; font-variant-numeric:tabular-nums; }
+.home-stat small{ font-size:12px; color:var(--txt-3); font-weight:700; }
+.home-stat__k{ display:block; font-size:12px; color:var(--txt-3); font-weight:700; margin-bottom:2px; }
+.home-stat--inside b{ color:var(--brand); }
+.home-stat b.is-ok{ color:var(--ok); } .home-stat b.is-warn{ color:var(--warn); } .home-stat b.is-danger{ color:#ff6b63; }
+
+.home-actions{ display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
+.home-act{
+  display:flex; flex-direction:column; align-items:flex-start; gap:2px;
+  background:var(--bg-1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:15px 18px; text-align:left; min-height:64px; justify-content:center;
+  transition:transform .05s ease, border-color .15s ease;
+}
+.home-act:active{ transform:scale(.99); }
+.home-act__t{ font-size:18px; font-weight:800; }
+.home-act__s{ font-size:13px; color:var(--txt-3); font-weight:600; }
+.home-logout{ margin-top:4px; }
+
+/* 홈 탭 아이콘(집 형태) */
+.tab[data-view="home"] .tab__ico{ border-radius:9px 9px 5px 5px; }
 .view{ animation:fade .18s ease; }
 @keyframes fade{ from{opacity:0} to{opacity:1} }
 .section-title{ font-size:15px; font-weight:700; color:var(--txt-2); margin:6px 2px 10px; }
@@ -805,4 +903,63 @@ body.sos-active .statstrip__inside b{ color:#fff; }
 }
 .toast.is-danger{ background:var(--danger); border-color:var(--danger); color:#fff; }
 .toast.is-ok{ background:var(--ok); border-color:var(--ok); color:#04220f; }
+
+/* ===================== 119 신고 접수 팝업 ===================== */
+.report-pop{
+  position:absolute; inset:0; z-index:95;
+  display:flex; align-items:center; justify-content:center; padding:20px;
+  background:rgba(5,8,12,.6);
+}
+.report-pop__card{
+  width:100%; max-width:360px; text-align:center;
+  background:var(--bg-1); border:1px solid var(--line); border-radius:18px;
+  padding:24px 22px; box-shadow:0 20px 50px rgba(0,0,0,.55); animation:sheetUp .18s ease;
+}
+.report-pop__ico{ font-size:40px; line-height:1; }
+.report-pop__title{ font-size:22px; font-weight:900; margin-top:8px; }
+.report-pop__desc{ font-size:15px; color:var(--txt-2); margin:10px 0 20px; line-height:1.5; }
+
+/* ===================== 태블릿 상태바 ===================== */
+.statusbar{
+  height:var(--statusbar-h);
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 16px; background:var(--bg);
+  font-size:11px; font-weight:700; color:var(--txt-2);
+}
+.statusbar__time{ font-variant-numeric:tabular-nums; letter-spacing:.3px; }
+.statusbar__right{ display:flex; align-items:center; gap:7px; }
+.sb-wifi{
+  width:14px; height:11px; color:var(--txt-2);
+  background:
+    linear-gradient(currentColor,currentColor) 0    100% / 3px 4px  no-repeat,
+    linear-gradient(currentColor,currentColor) 5.5px 100% / 3px 7px  no-repeat,
+    linear-gradient(currentColor,currentColor) 11px 100% / 3px 11px no-repeat;
+}
+.sb-batt{
+  position:relative; width:22px; height:11px; padding:1.5px;
+  border:1.3px solid var(--txt-2); border-radius:3px; display:inline-block;
+}
+.sb-batt::after{ content:""; position:absolute; right:-3px; top:3px; width:2px; height:5px; background:var(--txt-2); border-radius:0 1px 1px 0; }
+.sb-batt i{ display:block; width:82%; height:100%; background:var(--ok); border-radius:1px; }
+.sb-batt__pct{ font-variant-numeric:tabular-nums; }
+
+/* ===================== 패널이 시야를 덜 가리게 (축소·반투명) ===================== */
+.panel{ background:rgba(16,22,30,.52); }
+.panel--env{ width:178px; padding-bottom:9px; }
+.env-inside{ font-size:24px; }
+.env-status{ padding:8px 12px 8px; }
+.env-gases{ padding:0 12px; }
+.env-foot{ display:none; }
+.panel--alerts{ width:228px; }
+
+/* ===================== 고위험(가스)/작업 지점 아이콘 ===================== */
+.zone{
+  position:absolute; transform:translate(-50%,-50%);
+  width:20px; height:20px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; z-index:4; pointer-events:none;
+}
+.zone--haz{ background:rgba(255,59,48,.2); border:1.5px solid var(--danger); box-shadow:0 0 10px rgba(255,59,48,.45); animation:pulse 1.7s ease-in-out infinite; }
+.zone--work{ background:rgba(47,129,247,.18); border:1.5px solid var(--brand); }
+
 [hidden]{ display:none !important; }

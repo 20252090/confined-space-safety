@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0d1117" />
   <title>밀폐공간 안전관리</title>
-  <meta name="description" content="맨홀 등 밀폐공간 고위험 작업자 실시간 모니터링 관리자(감시인)용 앱" />
+  <meta name="description" content="맨홀 등 밀폐공간 고위험 작업자 실시간 모니터링 관리자용 앱" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -18,9 +18,31 @@
   <div class="splash" id="splash" role="status" aria-label="앱 시작 중">
     <div class="splash__mark">⛑</div>
     <div class="splash__title">밀폐공간 안전관리</div>
-    <div class="splash__sub">실시간 감시 시스템</div>
+    <div class="splash__sub">실시간 안전관리 시스템</div>
     <div class="splash__bar"><i></i></div>
     <div class="splash__foot" id="splash-foot">시스템 초기화 중…</div>
+  </div>
+
+  <!-- ===================== 로그인 (관리자 정보 + 현장 선택) ===================== -->
+  <div class="login" id="login" hidden>
+    <div class="login__card">
+      <div class="login__brand">⛑ 밀폐공간 안전관리</div>
+      <h2 class="login__title">관리자 로그인</h2>
+      <p class="login__lead">관리자 정보와 작업 현장을 선택해 로그인하세요.</p>
+      <label class="field">
+        <span class="field__label">관리자 이름</span>
+        <input type="text" id="login-name" placeholder="예: 홍길동" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span class="field__label">소속 (선택)</span>
+        <input type="text" id="login-org" placeholder="예: 안전관리팀" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span class="field__label">작업 현장</span>
+        <select id="login-site"></select>
+      </label>
+      <button class="btn btn--xl btn--primary login__btn" id="login-btn">로그인</button>
+    </div>
   </div>
 
   <!-- ===================== 구조 알림 오버레이 (119 연계) ===================== -->
@@ -55,9 +77,18 @@
 
   <!-- ===================== 상단 고정 헤더 ===================== -->
   <header class="topbar">
+    <!-- 태블릿 상태바 -->
+    <div class="statusbar">
+      <span class="statusbar__time" id="statusbar-clock">--:--</span>
+      <span class="statusbar__right">
+        <span class="sb-wifi" aria-hidden="true"></span>
+        <span class="sb-batt" aria-hidden="true"><i></i></span>
+        <span class="sb-batt__pct">82%</span>
+      </span>
+    </div>
     <div class="topbar__row">
       <div class="topbar__brand">
-        <span class="topbar__title" id="view-title">실시간 감시</span>
+        <span class="topbar__title" id="view-title">실시간 현황</span>
         <span class="topbar__clock" id="topbar-clock">--:--:--</span>
       </div>
       <div class="topbar__actions">
@@ -93,7 +124,31 @@
   <!-- ===================== 메인 콘텐츠 ===================== -->
   <main id="app">
 
-    <!-- ---------- 감시 (관제 뷰) ---------- -->
+    <!-- ---------- 홈 ---------- -->
+    <section class="view view--home" id="view-home" hidden>
+      <div class="home-hero">
+        <div class="home-hero__hi"><b id="home-name">-</b> 관리자님</div>
+        <div class="home-hero__site"><span class="home-hero__pin"></span><span id="home-site">-</span></div>
+        <div class="home-hero__date" id="home-date">-</div>
+      </div>
+
+      <div class="home-status">
+        <div class="home-stat home-stat--inside"><b id="home-inside">0</b><small>명 내부</small></div>
+        <div class="home-stat"><span class="home-stat__k">정상</span><b class="is-ok" id="home-ok">0</b></div>
+        <div class="home-stat"><span class="home-stat__k">주의</span><b class="is-warn" id="home-warn">0</b></div>
+        <div class="home-stat"><span class="home-stat__k">위험</span><b class="is-danger" id="home-danger">0</b></div>
+      </div>
+
+      <div class="home-actions">
+        <button class="home-act" data-goto="dashboard"><span class="home-act__t">실시간 현황</span><span class="home-act__s">현장 상황 보기</span></button>
+        <button class="home-act" data-goto="prep"><span class="home-act__t">작업 준비</span><span class="home-act__s">안전점검 · 입장</span></button>
+        <button class="home-act" data-goto="records"><span class="home-act__t">기록</span><span class="home-act__s">작업 일지 · 경보 이력</span></button>
+      </div>
+
+      <button class="btn btn--block btn--ghost home-logout" id="home-logout">로그아웃 · 현장 변경</button>
+    </section>
+
+    <!-- ---------- 현황 (관제 뷰) ---------- -->
     <section class="view view--stage" id="view-dashboard">
       <div class="stage">
         <!-- 배경: 하수도 관로 도면 -->
@@ -115,7 +170,7 @@
         <div class="panel panel--env">
           <div class="panel__head">
             <span class="live-dot"></span>
-            <span class="panel__title">현장 실시간 감시</span>
+            <span class="panel__title">현장 실시간 현황</span>
           </div>
           <div class="env-inside"><span id="env-inside">0</span><small>명 내부</small></div>
           <div class="env-status">
@@ -133,7 +188,7 @@
         </div>
 
         <!-- 우상단: 경고 -->
-        <div class="panel panel--alerts" id="panel-alerts">
+        <div class="panel panel--alerts is-collapsed" id="panel-alerts">
           <div class="panel__head panel__head--alerts">
             <span class="panel__title">경고</span>
             <button class="panel__collapse" id="al-collapse" aria-label="접기">›</button>
@@ -168,37 +223,8 @@
         <!-- 작업자 선택 시: AR 글라스 카메라 뷰 -->
         <div class="ar-view" id="stage-detail" hidden>
           <div class="ar-cam" id="ar-cam">
-            <!-- 맨홀 내부 1인칭 POV (시뮬레이션) -->
-            <svg class="ar-pov" viewBox="0 0 560 350" preserveAspectRatio="xMidYMid slice">
-              <defs>
-                <radialGradient id="arlight" cx="50%" cy="45%" r="62%">
-                  <stop offset="0%" stop-color="#1c3a52"/>
-                  <stop offset="58%" stop-color="#0a1622"/>
-                  <stop offset="100%" stop-color="#04090f"/>
-                </radialGradient>
-              </defs>
-              <rect width="560" height="350" fill="url(#arlight)"/>
-              <!-- 관로 원근 링 -->
-              <g fill="none" stroke="#2b4c66" stroke-opacity=".5">
-                <rect x="30"  y="26"  width="500" height="298" rx="130"/>
-                <rect x="92"  y="58"  width="376" height="234" rx="102"/>
-                <rect x="148" y="88"  width="264" height="174" rx="76"/>
-                <rect x="196" y="114" width="168" height="122" rx="54"/>
-                <rect x="232" y="136" width="96"  height="78"  rx="34"/>
-              </g>
-              <!-- 바닥 물 -->
-              <path d="M30,258 Q280,304 530,258 L530,350 L30,350 Z" fill="#10406a" fill-opacity=".3"/>
-              <path d="M30,258 Q280,304 530,258" fill="none" stroke="#3f8fc0" stroke-opacity=".4" stroke-width="2"/>
-              <!-- 중앙 광원 -->
-              <ellipse cx="280" cy="172" rx="44" ry="30" fill="#20476a" fill-opacity=".55"/>
-              <ellipse cx="280" cy="172" rx="16" ry="11" fill="#5fa3d6" fill-opacity=".5"/>
-              <!-- 전경 좌측 사다리 -->
-              <g stroke="#3a5f7a" stroke-width="4" stroke-opacity=".5" stroke-linecap="round">
-                <line x1="52" y1="128" x2="104" y2="128"/>
-                <line x1="44" y1="188" x2="100" y2="188"/>
-                <line x1="36" y1="252" x2="96"  y2="252"/>
-              </g>
-            </svg>
+            <!-- 맨홀 내부 1인칭 POV — 작업자별로 다르게 JS 생성, 이동 시 화면 변화 -->
+            <svg class="ar-pov" id="ar-pov" viewBox="0 0 560 350" preserveAspectRatio="xMidYMid slice"></svg>
             <div class="ar-scan"></div>
             <div class="ar-vignette"></div>
 
@@ -358,8 +384,11 @@
 
   <!-- ===================== 하단 탭 네비게이션 (3단계 흐름) ===================== -->
   <nav class="tabbar" id="tabbar">
-    <button class="tab is-active" data-view="dashboard">
-      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">감시</span>
+    <button class="tab is-active" data-view="home">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">홈</span>
+    </button>
+    <button class="tab" data-view="dashboard">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">현황</span>
     </button>
     <button class="tab" data-view="prep">
       <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">준비</span>
@@ -413,6 +442,16 @@
       <div class="modal__actions">
         <button class="btn btn--ghost" data-close-radio>닫기</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ===================== 119 신고 접수 팝업 ===================== -->
+  <div class="report-pop" id="report-pop" hidden>
+    <div class="report-pop__card">
+      <div class="report-pop__ico">📞</div>
+      <div class="report-pop__title">119 신고 접수</div>
+      <div class="report-pop__desc" id="report-pop-desc">상황이 119에 신고 접수되었습니다.</div>
+      <button class="btn btn--xl btn--primary" id="report-pop-ok">확인</button>
     </div>
   </div>
 

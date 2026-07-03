@@ -20,7 +20,7 @@ const CHECK_ITEMS = [
   { key:'vent',    title:'환기 실시',       desc:'송풍기 가동 및 지속 환기' },
   { key:'mask',    title:'송기마스크 착용',  desc:'공기호흡기/송기마스크 점검' },
   { key:'harness', title:'안전대·구명줄',    desc:'추락/구조용 안전대 착용' },
-  { key:'radio',   title:'무전기 확인',      desc:'감시인-작업자 교신 테스트' },
+  { key:'radio',   title:'무전기 확인',      desc:'관리자-작업자 교신 테스트' },
   { key:'permit',  title:'작업허가서',       desc:'밀폐공간 작업허가 승인' },
 ];
 
@@ -30,6 +30,7 @@ function defaultState(){
     logs: [],             // 작업 일지 {id,name,location,mh,enteredAt,exitedAt,durationSec,checklistPassed}
     alarms: [],           // 경보 이력 {id,ts,level,type,message,who}
     comms: [],            // 무전 교신 {id,ts,workerId,dir:'out'|'in',text}
+    session: null,        // 로그인 세션 {name,org,site,ts}
     checklist: Object.fromEntries(CHECK_ITEMS.map(c=>[c.key,false])),
     settings: {
       intervalMin: 5,
@@ -191,10 +192,18 @@ function gasStatus(kind, val){
   return 'ok';
 }
 
-/* 작업자 종합 상태 판정 → {level, note} */
+/* 작업자 종합 상태 판정 → {level, note}
+   복귀 중이어도 실제 위험/주의는 그대로 유지한다(복귀를 눌러도 무조건 안전이 되지 않음). */
 function evalWorker(w){
   if(w.connState==='connecting') return { level:'ok', note:'AR·태블릿 연결 중', connecting:true };
-  if(w.returning) return { level:'ok', note:'복귀 중', returning:true };
+  const ev = evalWorkerCore(w);
+  if(w.returning){
+    if(ev.level==='ok') return { level:'ok', note:'복귀 중', returning:true };
+    return Object.assign({}, ev, { note:'복귀 중 · '+ev.note, returning:true });
+  }
+  return ev;
+}
+function evalWorkerCore(w){
   const g = gasCache.get(w.id) || simGas(w);
   const gasLevels = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)];
   const gasDanger = gasLevels.includes('danger');
@@ -212,9 +221,10 @@ function evalWorker(w){
   // 가스·생체 위험은 즉시 위험. 안전확인 무응답은 '움직임이 없고 위험 수준'일 때만 119·구조로 격상한다.
   if(gasDanger) return { level:'danger', note:'가스 임계치 초과' };
   if(vs.level==='danger') return { level:'danger', note:'생체 위험 · '+vs.note };
-  if(overdue > graceMs && still) return { level:'danger', note:'119 연락 · 무응답·무움직임', noMove:true };
+  // 미응답 위험은 3단계 경고를 모두 거친 뒤(=graceMs*3 경과), 그리고 무움직임일 때만 격상 → 급박하게 위험으로 가지 않음
+  if(overdue > graceMs*3 && still) return { level:'danger', note:'119 연락 · 무응답·무움직임', noMove:true };
 
-  // ── 안전확인 응답(작업자 몫) 단계적 경고 ──
+  // ── 안전확인 응답(작업자 몫) 단계적 경고 (충분한 주의 확보) ──
   //   ① 요청 중(응답 대기) → ② 무전 확인 → ③ 퇴장 권고
   if(overdue > 0){
     if(overdue <= graceMs)   return { level:'warn', note:'안전확인 요청 중', needRespond:true, remain:Math.ceil((graceMs-overdue)/1000) };
@@ -231,8 +241,8 @@ function evalWorker(w){
 
 /* ============================ 4. 렌더링 ============================ */
 let currentView = 'dashboard';
-const VIEW_TITLES = { dashboard:'실시간 감시', prep:'작업 준비', records:'기록', settings:'설정' };
-const PHASE_LABELS = { dashboard:'감시', prep:'준비', records:'기록', settings:'설정' };
+const VIEW_TITLES = { home:'홈', dashboard:'실시간 현황', prep:'작업 준비', records:'기록', settings:'설정' };
+const PHASE_LABELS = { home:'홈', dashboard:'현황', prep:'준비', records:'기록', settings:'설정' };
 
 function insideWorkers(){ return state.workers.filter(w=>w.inside); }
 
@@ -249,10 +259,61 @@ function switchView(view){
 }
 
 function renderView(view){
-  if(view==='dashboard') renderDashboard(true);
+  if(view==='home') renderHome();
+  else if(view==='dashboard') renderDashboard(true);
   else if(view==='prep') renderPrep();
   else if(view==='records') renderRecords();
   else if(view==='settings') renderSettings();
+}
+
+/* ---------- 로그인 (관리자 정보 + 현장 선택) ---------- */
+const WORK_SITES = ['1구역 하수관로','2구역 우수관로','3구역 정화조 정비','4구역 맨홀 준설','하수처리장 유입부'];
+function fillSiteOptions(){
+  const sel = $('#login-site'); if(!sel) return;
+  sel.innerHTML = '<option value="">현장 선택…</option>' + WORK_SITES.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+}
+function showLogin(){
+  fillSiteOptions();
+  const s = state.session;
+  $('#login-name').value = s? s.name : '';
+  $('#login-org').value  = s? (s.org||'') : '';
+  $('#login-site').value = s? s.site : '';
+  $('#login').hidden = false;
+  setTimeout(()=>$('#login-name').focus(), 80);
+}
+function doLogin(){
+  const name = $('#login-name').value.trim();
+  const org  = $('#login-org').value.trim();
+  const site = $('#login-site').value;
+  if(!name){ toast('관리자 이름을 입력하세요.','danger'); $('#login-name').focus(); return; }
+  if(!site){ toast('작업 현장을 선택하세요.','danger'); return; }
+  state.session = { name, org, site, ts:now() };
+  save();
+  $('#login').hidden = true;
+  switchView('home');
+  toast(`${name} 관리자 · ${site} 로그인`, 'ok');
+}
+function logout(){
+  if(!confirm('로그아웃하고 현장 선택 화면으로 돌아갑니다. 계속하시겠습니까?')) return;
+  state.session = null; save();
+  showLogin();
+}
+
+/* ---------- 홈 ---------- */
+function renderHome(){
+  const s = state.session || {};
+  $('#home-name').textContent = s.name || '-';
+  $('#home-site').textContent = s.site || '현장 미선택';
+  const d = new Date(now());
+  const wd = ['일','월','화','수','목','금','토'][d.getDay()];
+  $('#home-date').textContent = `${d.getFullYear()}. ${pad(d.getMonth()+1)}. ${pad(d.getDate())} (${wd}) ${fmtClock(now())}`;
+  const list = insideWorkers();
+  const c = {ok:0,warn:0,danger:0};
+  list.forEach(w=>c[evalWorker(w).level]++);
+  $('#home-inside').textContent = list.length;
+  $('#home-ok').textContent = c.ok;
+  $('#home-warn').textContent = c.warn;
+  $('#home-danger').textContent = c.danger;
 }
 
 /* ---------- 공통: 내부 인원 · 상단 상태 스트립 ---------- */
@@ -397,6 +458,9 @@ function buildSewer(){
     html += `<div class="dist-label" style="left:${mx}%;top:91.6%">${SEG_DIST[i].toFixed(1)}</div>`;
   }
   P.forEach(p=>{ html += `<div class="mh-il" data-mh="${p.id}" style="left:${p.x}%;top:${(p.yb+1.6)}%">IL ${(GL-p.depth).toFixed(2)}</div>`; });
+  // 고위험(가스) / 작업 지점 아이콘
+  HAZARDS.forEach(h=>{ html += `<div class="zone zone--haz" style="left:${h.x}%;top:${pipeCenterY(h.x)}%" title="고위험(가스)">⚠</div>`; });
+  WORKSITES.forEach(s=>{ html += `<div class="zone zone--work" style="left:${s.x}%;top:${pipeCenterY(s.x)}%" title="작업 지점">🔧</div>`; });
   $('#stage-nodes').innerHTML = html;
 }
 
@@ -418,9 +482,13 @@ function freeSlot(){
 /* 작업자 실시간 위치/이동 상태 (입구 하강 + 무작위 이동/정지) */
 const wpos = new Map();                 // id -> {x,y,cx,cy,tx,ty,st,until}
 /* 이동 파라미터(화면상 또렷하게 보이도록 조정) */
-const DESCEND_SPEED = 2.6;              // 입구→작업심도 하강 속도(세로 %/s)
-const MOVE_SPEED    = 1.2;              // 관로 내 이동 속도(가로 %/s) — 천천히 걷는 느낌
+const DESCEND_SPEED = 1.8;              // 입구→작업심도 하강 속도(세로 %/s)
+const MOVE_SPEED    = 0.7;              // 관로 내 이동 속도(가로 %/s) — 아주 천천히
 const WANDER_X = 3.6;                   // 작업 반경(맨홀 기준 좌우 ±%)
+/* 고위험(가스 등) 지점 → 피해 다님 / 작업 지점 → 아이콘 표시·이동해 작업 */
+const HAZARDS   = [ {x:31}, {x:47} ];
+const WORKSITES = [ {x:19}, {x:40} ];
+const HAZARD_AVOID = 5;                 // 고위험 회피 반경(%)
 const WANDER_Y = 1.4;                   // 관 내부 상하 여유(±%)
 const WANDER_MIN_X = 11, WANDER_MAX_X = 53;   // 이동 허용 구간(좌우 패널·가장자리 회피)
 const rnd = (a,b)=> a + Math.random()*(b-a);
@@ -560,11 +628,108 @@ function renderAlertPanel(){
 }
 
 /* 마커 선택 → AR 카메라 뷰(마커 대각선 위) */
-function openDetail(id){ selectedId=id; $('#stage-detail').hidden=false; syncDetail(); positionAR(); }
+function openDetail(id){
+  selectedId=id;
+  const w = state.workers.find(x=>x.id===id);
+  buildPov(w);                               // 작업자별 어두운 하수구 시야 생성
+  $('#stage-detail').hidden=false; syncDetail(); positionAR();
+}
 function closeDetail(){
   selectedId=null;
   $('#stage-detail').hidden=true;
   const l=$('#ar-link'); if(l) l.hidden=true;
+}
+
+/* ===== 맨홀 내부 1인칭 시야(어두운 하수구) — 작업자별로 다르게, 이동 시 변화 ===== */
+function seedOf(id){ let h=0; const s=String(id||'x'); for(let i=0;i<s.length;i++) h=((h*31)+s.charCodeAt(i))>>>0; return h; }
+/* 어두운 톤 팔레트(노랑 없음): 각 작업자 시드로 선택 */
+const POV_PALS = [
+  { d:['#39463f','#1e2a25','#101812','#050806'], w:['#22321f','#070d0a'], f:'#9fb6a8', b:'#0e1712', wk:'#333a30' }, // 이끼 낀 초록
+  { d:['#3a454d','#1e2830','#0f171c','#050708'], w:['#20303a','#070c0e'], f:'#9fb0bb', b:'#101619', wk:'#343b40' }, // 축축한 청회색
+  { d:['#3f3d43','#232128','#131217','#060608'], w:['#242231','#08070d'], f:'#a9a6b4', b:'#131218', wk:'#38363e' }, // 어두운 회보라
+];
+/* 소실점(vpx,155) 기준으로 s배 축소한 아치 경로 */
+function povArch(vpx, s){
+  const nyF=316, nyS=150, rx0=256, ry0=110, vpy=155;
+  const xL=(vpx+(24-vpx)*s).toFixed(1),  xR=(vpx+(536-vpx)*s).toFixed(1);
+  const yF=(vpy+(nyF-vpy)*s).toFixed(1), yS=(vpy+(nyS-vpy)*s).toFixed(1);
+  const rx=(rx0*s).toFixed(1), ry=(ry0*s).toFixed(1);
+  return `M${xL},${yF} L${xL},${yS} A${rx},${ry} 0 0 1 ${xR},${yS} L${xR},${yF}`;
+}
+function buildPov(w){
+  const svg = $('#ar-pov'); if(!svg) return;
+  if(!w){ svg.innerHTML=''; return; }
+  const sd  = seedOf(w.id);
+  const pal = POV_PALS[sd % POV_PALS.length];
+  const vpx = 280 + ((sd % 5) - 2) * 22;         // 소실점 좌우 이동 → 작업자별 굽은 방향
+  const vpy = 155;
+
+  // 아치 5겹
+  const arcS = [1, 0.72, 0.52, 0.37, 0.26];
+  let arcs = '';
+  arcS.forEach((s,i)=>{ arcs += `<path d="${povArch(vpx,s)}" fill="none" stroke="${pal.b}" stroke-opacity="${(0.6-i*0.08).toFixed(2)}" stroke-width="${(3-i*0.4).toFixed(1)}" stroke-linecap="round"/>`; });
+
+  // 종방향 벽돌줄(소실점 수렴)
+  const pts = [[24,316],[536,316],[24,150],[536,150],[vpx,40],[70,86],[490,86],[150,50],[410,50],[40,112],[520,112]];
+  const radial = pts.map(p=>`<line x1="${p[0]}" y1="${p[1]}" x2="${vpx}" y2="${vpy}"/>`).join('');
+
+  // 바닥 통로 + 물길
+  const wl=vpx-5, wr=vpx+5;
+  const floor = `<polygon points="24,316 238,316 ${wl-2},167 ${wl-14},167" fill="${pal.wk}" fill-opacity=".5"/>`
+              + `<polygon points="536,316 322,316 ${wr+14},167 ${wr+2},167" fill="${pal.wk}" fill-opacity=".5"/>`;
+  const water = `<polygon points="238,316 322,316 ${wr},166 ${wl},166" fill="url(#tunWater)"/>`
+              + `<polygon points="270,314 290,314 ${vpx+3},168 ${vpx-3},168" fill="${pal.f}" fill-opacity=".18"/>`;
+
+  // 램프(어둑한 냉광) — 시드로 위치/개수
+  const lampPos = [[150,120],[410,120],[212,140],[348,140],[100,150],[460,150]];
+  const lampN = 2 + (sd>>2)%3;
+  let lamps='';
+  for(let i=0;i<lampN;i++){ const lp=lampPos[(sd>>i)%lampPos.length]; lamps+=`<ellipse cx="${lp[0]}" cy="${lp[1]}" rx="${18-i*2}" ry="${11-i}" fill="url(#tunLamp)"/>`; }
+
+  // 측면 분기관(옵션) — 시드
+  const jt = (sd>>3)%3; let junc='';
+  if(jt===1) junc = `<ellipse cx="112" cy="150" rx="24" ry="40" fill="${pal.d[3]}" fill-opacity=".85"/><path d="M88,150 A24,40 0 0 1 136,150" fill="none" stroke="${pal.b}" stroke-opacity=".5" stroke-width="1.5"/>`;
+  else if(jt===2) junc = `<ellipse cx="448" cy="150" rx="24" ry="40" fill="${pal.d[3]}" fill-opacity=".85"/><path d="M424,150 A24,40 0 0 1 472,150" fill="none" stroke="${pal.b}" stroke-opacity=".5" stroke-width="1.5"/>`;
+
+  const defs = `<defs>
+    <radialGradient id="tunDepth" cx="${(vpx/560*100).toFixed(0)}%" cy="47%" r="62%">
+      <stop offset="0%" stop-color="${pal.d[0]}"/><stop offset="24%" stop-color="${pal.d[1]}"/>
+      <stop offset="54%" stop-color="${pal.d[2]}"/><stop offset="100%" stop-color="${pal.d[3]}"/>
+    </radialGradient>
+    <linearGradient id="tunWater" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${pal.w[0]}" stop-opacity=".85"/><stop offset="100%" stop-color="${pal.w[1]}" stop-opacity=".85"/>
+    </linearGradient>
+    <radialGradient id="tunFog" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="${pal.f}" stop-opacity=".42"/><stop offset="60%" stop-color="${pal.f}" stop-opacity=".14"/><stop offset="100%" stop-color="${pal.f}" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="tunLamp" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="${pal.f}" stop-opacity=".4"/><stop offset="100%" stop-color="${pal.f}" stop-opacity="0"/>
+    </radialGradient>
+  </defs>`;
+
+  svg.innerHTML = defs
+    + `<rect x="-40" y="-30" width="640" height="410" fill="${pal.d[3]}"/>`
+    + `<g id="pov-scene">`
+    +   `<rect x="-40" y="-30" width="640" height="410" fill="url(#tunDepth)"/>`
+    +   `<g stroke="${pal.b}" stroke-opacity=".24" stroke-width="1.2">${radial}</g>`
+    +   arcs + junc + floor + water
+    +   `<line x1="120" y1="300" x2="${vpx-10}" y2="178" stroke="#0a0f0d" stroke-opacity=".7" stroke-width="2.2" stroke-linecap="round"/>`
+    +   lamps
+    +   `<ellipse cx="${vpx}" cy="158" rx="60" ry="45" fill="url(#tunFog)"/>`
+    + `</g>`;
+}
+/* 이동 시 시야가 흔들리듯 변화 — pov-scene 을 위치/움직임에 따라 미세 이동 */
+function updatePov(t){
+  const sc = document.getElementById('pov-scene'); if(!sc) return;
+  const p = wpos.get(selectedId);
+  const moving = p && (p.st==='move'||p.st==='descend'||p.st==='ascend');
+  const amp = moving ? 6 : 1.8;
+  const ph = t/1000;
+  let pan = 0;
+  if(p){ pan = Math.max(-9, Math.min(9, (p.tx - p.x) * 1.6)); }   // 진행 방향으로 팬
+  const dx = (Math.sin(ph*1.7)*amp + pan).toFixed(2);
+  const dy = (Math.sin(ph*2.6)*amp*0.55).toFixed(2);
+  sc.setAttribute('transform', `translate(${dx},${dy})`);
 }
 
 /* AR 카드를 마커(현재 위치)의 대각선 위쪽에 배치 */
@@ -623,20 +788,28 @@ function animateWorkers(t){
       // 안전확인 무응답이 무전 단계까지 지속되면 이동을 멈춘다(정지 유지 → 무움직임 격상)
       if(nonRespondFrozen(w)){ p.until=t+1500; }
       else if(t>=p.until){
-        p.tx = clamp(p.cx + rnd(-WANDER_X, WANDER_X), WANDER_MIN_X, WANDER_MAX_X);
-        p.ty = pipeCenterY(p.tx) + rnd(-WANDER_Y, WANDER_Y);  // 관로 경사를 따라가 항상 관 안에 머문다
+        // 가끔 가까운 작업 지점으로 이동해 작업, 아니면 무작위 이동
+        const near = WORKSITES.filter(s=>Math.abs(s.x-p.cx) <= WANDER_X+9);
+        let tx;
+        if(near.length && Math.random()<0.5){ tx = near[Math.floor(Math.random()*near.length)].x + rnd(-1.5,1.5); p.working=true; }
+        else { tx = p.cx + rnd(-WANDER_X, WANDER_X); p.working=false; }
+        // 고위험(가스) 지역은 피해 다닌다
+        HAZARDS.forEach(h=>{ if(Math.abs(tx-h.x)<HAZARD_AVOID) tx = h.x + (tx>=h.x?1:-1)*HAZARD_AVOID; });
+        tx = clamp(tx, WANDER_MIN_X, WANDER_MAX_X);
+        p.tx = tx;
+        p.ty = pipeCenterY(tx) + rnd(-WANDER_Y, WANDER_Y);  // 관로 경사를 따라가 항상 관 안에 머문다
         p.st='move';
       }
     } else {
       const dx=p.tx-p.x, dy=p.ty-p.y, d=Math.hypot(dx,dy), step=MOVE_SPEED*dt;
-      if(d<=step){ p.x=p.tx; p.y=p.ty; p.st='pause'; p.until=t+rnd(4500,9000); }
+      if(d<=step){ p.x=p.tx; p.y=p.ty; p.st='pause'; p.until=t+(p.working?rnd(8000,14000):rnd(5000,10000)); }
       else { p.x+=dx/d*step; p.y+=dy/d*step; }
       p.lastMoveAt=now();
     }
     const el=document.getElementById('mk-'+w.id);
     if(el){ el.style.left=p.x+'%'; el.style.top=p.y+'%'; }
   });
-  if(selectedId && !$('#stage-detail').hidden) updateARLink();
+  if(selectedId && !$('#stage-detail').hidden){ updateARLink(); updatePov(t); }
 }
 function syncDetail(){
   const w = state.workers.find(x=>x.id===selectedId);
@@ -861,7 +1034,7 @@ function enterWorker(id){
   refreshAll();
 }
 
-/* AR·태블릿 연결 완료 시 실제 작업(하강/감시) 시작 */
+/* AR·태블릿 연결 완료 시 실제 작업(하강/현황) 시작 */
 const CONNECT_MS = 2600;
 function promoteConnections(){
   let changed = false;
@@ -880,7 +1053,7 @@ function promoteConnections(){
 function mhLabel(w){ return (w && MH_BY_ID[w.mh] && MH_BY_ID[w.mh].label) || (w&&w.location) || ''; }
 
 /* 복귀 요청 — 맨홀 위(지표면)로 천천히 상승 시작. 도달 시 finalizeReturn */
-const ASCEND_SPEED = 1.4;   // 상승 속도(세로 %/s) — 하강보다 느리게(천천히 복귀)
+const ASCEND_SPEED = 1.0;   // 상승 속도(세로 %/s) — 하강보다 느리게(천천히 복귀)
 function requestReturn(id){
   const w = state.workers.find(x=>x.id===id); if(!w||!w.inside||w.returning) return;
   // 연결 중(아직 하강 전)이면 즉시 복귀 확정
@@ -888,8 +1061,7 @@ function requestReturn(id){
   w.returning = true;
   const p = wpos.get(id);
   if(p){ p.st='ascend'; p.tx=p.cx; p.ty=SURF+1; } else { finalizeReturn(id); return; }
-  clearWorkerFlags(id);
-  if(rescueTargetId===id) closeRescue();
+  // 복귀를 눌러도 위험/주의 상태는 유지 — 경보 플래그·구조 알림을 강제로 끄지 않는다
   save();
   toast(`${w.name} 복귀 중 — 맨홀로 상승`, 'ok');
   refreshAll();
@@ -904,7 +1076,7 @@ function finalizeReturn(id){
   if(log){ log.exitedAt = exitedAt; log.durationSec = Math.floor((exitedAt-log.enteredAt)/1000); }
   toast(`${w.name} 복귀 완료 · 작업 ${fmtDurKo((exitedAt-(w.enteredAt||exitedAt))/1000)}`, 'ok');
   w.enteredAt = null; w.logId = null; w.mh = null; w.connState = 'idle'; w.connAt = null;
-  gasCache.delete(w.id); vitalsCache.delete(w.id); wpos.delete(w.id);
+  gasCache.delete(w.id); vitalsCache.delete(w.id); wpos.delete(w.id); proRadioAt.delete(w.id);
   clearWorkerFlags(w.id);
   if(rescueTargetId===id) closeRescue();
   if(selectedId===id) closeDetail();
@@ -993,7 +1165,7 @@ function clearWorkerFlags(id){
 function autoDetectAlarms(){
   insideWorkers().forEach(w=>{
     if(w.connState==='connecting') return;   // 연결 중엔 판정 보류
-    const ev = evalWorker(w);
+    const ev = evalWorkerCore(w);            // 복귀 중이어도 실제 상태로 경보 판정
     const vs = vitalStatus(w);
     const g  = gasCache.get(w.id) || simGas(w);
     const gasWarn = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)].includes('warn');
@@ -1057,6 +1229,15 @@ function triggerRescue(w, reason){
   addAlarm('danger', '구조 알림 발령 · 119 연계', `${w.name} · ${mhLabel(w)} · ${reason}`);
   showRescue(w, reason);
 }
+
+/* 119 신고 접수 팝업 */
+function report119(context){
+  addAlarm('danger', '119 신고 전화 발신', context||'');
+  $('#report-pop-desc').textContent = (context ? context + ' — ' : '') + '상황이 119에 신고 접수되었습니다.';
+  $('#report-pop').hidden = false;
+  if(navigator.vibrate) navigator.vibrate(200);
+}
+function closeReport(){ $('#report-pop').hidden = true; }
 function showRescue(w, reason){
   rescueTargetId = w.id;
   const g  = gasCache.get(w.id) || simGas(w);
@@ -1095,6 +1276,27 @@ function addComm(workerId, dir, text){
   if(state.comms.length>800) state.comms = state.comms.slice(-800);
   save();
 }
+
+/* 작업자가 가끔 먼저 관리자에게 무전을 보낸다(자발적 교신 = 안전 체크인) */
+const proRadioAt = new Map();     // id -> 다음 자발 교신 시각(ms)
+const PRO_MSGS = ['이상 없음, 작업 진행 중','가스 수치 안정적입니다','구간 점검 완료','환기 상태 양호','현재 위치 이동 중, 이상 없음','작업 정상 진행 중입니다'];
+let lastProToast = 0;
+function maybeProactiveRadio(){
+  insideWorkers().forEach(w=>{
+    if(w.connState!=='connected' || w.returning) return;
+    let at = proRadioAt.get(w.id);
+    if(at==null){ proRadioAt.set(w.id, now() + (25 + Math.random()*45)*1000); return; }  // 첫 교신 예약
+    if(now() < at) return;
+    const msg = PRO_MSGS[Math.floor(Math.random()*PRO_MSGS.length)];
+    addComm(w.id, 'in', msg);
+    w.lastResponseAt = now();              // 자발 교신 = 안전확인 갱신
+    alarmedSet.delete(w.id+'::resp');
+    proRadioAt.set(w.id, now() + (45 + Math.random()*75)*1000);   // 다음 교신
+    save();
+    if(radioTargetId===w.id && !$('#radio-modal').hidden) renderRadioLog();
+    else { const t=now(); if(t-lastProToast>=3500){ lastProToast=t; toast(`${w.name} 무전: ${msg}`,'ok'); } }
+  });
+}
 function openRadio(id){
   const w = state.workers.find(x=>x.id===id); if(!w) return;
   radioTargetId = id;
@@ -1127,12 +1329,15 @@ function sendComm(text){
     const cur = state.workers.find(x=>x.id===id);
     if(!cur || !cur.inside) return;
     addComm(id, 'in', ack);
-    // 무전 응답 = 생존·상태 확인 → 안전확인 갱신(미응답 해제, 정상 상태)
+    // 무전 응답 = 생존·상태 확인 → 안전확인 갱신, 미응답 관련 경보 해제(정상 복귀)
     cur.lastResponseAt = now();
-    alarmedSet.delete(id+'::resp');
+    clearWorkerFlags(id);
     save();
+    const okNow = evalWorkerCore(cur).level==='ok';   // 가스·생체가 여전히 위험이면 안전으로 되돌리지 않음
+    if(okNow && rescueTargetId===id) closeRescue();
     if(radioTargetId===id && !$('#radio-modal').hidden) renderRadioLog();
-    else toast(`${cur.name} 무전 응답: ${ack}`, 'ok');
+    if(okNow) toast(`${cur.name} 응답 완료 · 안전 상태로 전환`, 'ok');
+    else toast(`${cur.name} 무전 응답: ${ack}`, 'danger');
     if(currentView==='dashboard') renderDashboard(true);
   }, 1800 + Math.floor(Math.random()*1600));
 }
@@ -1153,7 +1358,9 @@ function refreshAll(){
 
 function tick(){
   $('#topbar-clock').textContent = fmtClock(now());
+  const sbc = $('#statusbar-clock'); if(sbc) sbc.textContent = fmtHM(now());
   promoteConnections();
+  maybeProactiveRadio();
   autoDetectAlarms();
   updateStatStrip();
   if(currentView==='dashboard') renderDashboard(false);
@@ -1161,6 +1368,7 @@ function tick(){
     // 내부 인원 경과시간·입장 잠금 갱신(가벼운 재렌더)
     renderWorkerList();
   }
+  else if(currentView==='home') renderHome();
 }
 
 let toastTimer=null;
@@ -1215,6 +1423,8 @@ function bindEvents(){
 
   // 위임: 작업자/대시보드 액션
   $('#app').addEventListener('click', e=>{
+    const goto = e.target.closest('[data-goto]');
+    if(goto){ switchView(goto.dataset.goto); return; }
     const mk = e.target.closest('[data-mk]');
     if(mk){ openDetail(mk.dataset.mk); return; }
     const btn = e.target.closest('[data-act]');
@@ -1250,6 +1460,11 @@ function bindEvents(){
     showRescue(w, ev.level==='ok' ? '수동 구조 요청' : ev.note);
   });
 
+  // 로그인 · 로그아웃
+  $('#login-btn').addEventListener('click', doLogin);
+  $('#login').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+  $('#home-logout').addEventListener('click', logout);
+
   // 무전 모달
   $('#radio-send').addEventListener('click', ()=>sendComm($('#radio-text').value));
   $('#radio-text').addEventListener('keydown', e=>{ if(e.key==='Enter') sendComm($('#radio-text').value); });
@@ -1262,9 +1477,12 @@ function bindEvents(){
   $('#rescue-call').addEventListener('click', ()=>{
     if(!rescueTargetId) return;
     const w = state.workers.find(x=>x.id===rescueTargetId);
-    addAlarm('danger', '119 신고 전화 발신', `${w?w.name:''} · ${w?mhLabel(w):''}`);
-    toast('119 신고 전화 연결', 'danger');
+    report119(w ? `${w.name} · ${mhLabel(w)}` : '');
   });
+  // SOS 전체 대피 배너의 119 버튼
+  const sosCall = $('.sos-banner__call'); if(sosCall) sosCall.addEventListener('click', ()=>report119('전체 대피'));
+  // 119 신고 접수 팝업 확인
+  $('#report-pop-ok').addEventListener('click', closeReport);
   // 경보등급 필터 / 패널 접기
   $('#al-grade').addEventListener('change', e=>{ alertGrade=e.target.value; lastAlarmSig=''; renderAlertPanel(); });
   $('#al-collapse').addEventListener('click', ()=>$('#panel-alerts').classList.toggle('is-collapsed'));
@@ -1319,7 +1537,8 @@ function setByPath(path,val){
 function boot(){
   buildSewer();
   bindEvents();
-  switchView('dashboard');
+  switchView('home');            // 로그인 후 기본 진입 화면
+  if(!state.session) showLogin();  // 미로그인 → 로그인 게이트(스플래시 뒤)
   tick();
   setInterval(tick, 1000);
   requestAnimationFrame(animateWorkers);   // 작업자 이동 애니메이션
