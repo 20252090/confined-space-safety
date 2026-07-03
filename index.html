@@ -9,12 +9,47 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- ===================== 전체 경보 오버레이 ===================== -->
-  <div id="alarm-overlay" class="alarm-overlay" hidden>
-    <div class="alarm-overlay__inner">
-      <div class="alarm-overlay__title" id="alarm-overlay-title">전체 대피</div>
-      <div class="alarm-overlay__desc" id="alarm-overlay-desc">모든 작업자를 즉시 대피시키세요</div>
-      <button class="btn btn--xl btn--ghost" id="alarm-overlay-close">경보 해제</button>
+  <!-- ===================== 태블릿 프레임 ===================== -->
+  <div class="device">
+    <span class="device__cam" aria-hidden="true"></span>
+    <div class="screen">
+
+  <!-- ===================== 스플래시(부팅) 화면 ===================== -->
+  <div class="splash" id="splash" role="status" aria-label="앱 시작 중">
+    <div class="splash__mark">⛑</div>
+    <div class="splash__title">밀폐공간 안전관리</div>
+    <div class="splash__sub">실시간 감시 시스템</div>
+    <div class="splash__bar"><i></i></div>
+    <div class="splash__foot" id="splash-foot">시스템 초기화 중…</div>
+  </div>
+
+  <!-- ===================== 구조 알림 오버레이 (119 연계) ===================== -->
+  <div id="rescue-overlay" class="rescue-overlay" hidden>
+    <div class="rescue-card">
+      <div class="rescue-head">
+        <span class="rescue-siren">🚨</span>
+        <div>
+          <div class="rescue-title">구조 알림</div>
+          <div class="rescue-sub" id="rescue-sub">작업자 · 위치 · 상황</div>
+        </div>
+      </div>
+
+      <div class="rescue-relay">
+        <div class="rescue-relay__h">119 전달 정보</div>
+        <ul class="rescue-relay__list" id="rescue-relay-list"></ul>
+      </div>
+
+      <a class="btn btn--xl rescue-call" id="rescue-call" href="tel:119">📞 119 신고 전화</a>
+
+      <div class="rescue-steps">
+        <div class="rescue-steps__h">지시자 대응 절차</div>
+        <ol class="rescue-steps__list" id="rescue-steps-list"></ol>
+      </div>
+
+      <div class="rescue-actions">
+        <button class="btn btn--radio" id="rescue-radio">무전 교신</button>
+        <button class="btn btn--ghost" id="rescue-close">경보 해제</button>
+      </div>
     </div>
   </div>
 
@@ -22,20 +57,43 @@
   <header class="topbar">
     <div class="topbar__row">
       <div class="topbar__brand">
-        <span class="topbar__title" id="view-title">실시간 대시보드</span>
+        <span class="topbar__title" id="view-title">실시간 감시</span>
         <span class="topbar__clock" id="topbar-clock">--:--:--</span>
       </div>
-      <button class="btn btn--sos" id="sos-btn">
-        <span class="btn--sos__main">SOS</span>
-        <span class="btn--sos__sub">전체 대피</span>
-      </button>
+      <div class="topbar__actions">
+        <button class="icon-btn" id="settings-btn" aria-label="설정" title="설정">
+          <span class="icon-gear" aria-hidden="true"></span>
+        </button>
+        <button class="btn btn--sos" id="sos-btn">
+          <span class="btn--sos__main">SOS</span>
+          <span class="btn--sos__sub">전체 대피</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 상시 상태 스트립 (모든 화면 공통) -->
+    <div class="statstrip" id="statstrip">
+      <div class="statstrip__inside"><b id="ss-inside">0</b><small>명 내부</small></div>
+      <div class="statstrip__grades">
+        <span class="ss-g ss-g--ok">정상<b id="ss-ok">0</b></span>
+        <span class="ss-g ss-g--warn">주의<b id="ss-warn">0</b></span>
+        <span class="ss-g ss-g--danger">위험<b id="ss-danger">0</b></span>
+      </div>
+      <div class="statstrip__phase" id="statstrip-phase">준비</div>
+    </div>
+
+    <!-- SOS 전체 대피 배너 (상단만 점멸) -->
+    <div class="sos-banner" id="sos-banner" hidden>
+      <span class="sos-banner__txt">🚨 전체 대피 발령 · 전원 복귀 중</span>
+      <a class="sos-banner__call" href="tel:119">📞 119 신고</a>
+      <button class="sos-banner__clear" id="sos-clear">해제</button>
     </div>
   </header>
 
   <!-- ===================== 메인 콘텐츠 ===================== -->
   <main id="app">
 
-    <!-- ---------- 대시보드 (관제 뷰) ---------- -->
+    <!-- ---------- 감시 (관제 뷰) ---------- -->
     <section class="view view--stage" id="view-dashboard">
       <div class="stage">
         <!-- 배경: 하수도 관로 도면 -->
@@ -50,7 +108,7 @@
         <div class="stage__markers" id="stage-markers"></div>
         <div class="stage-empty" id="stage-empty">
           현재 밀폐공간 내부에 있는 작업자가 없습니다.<br />
-          <span class="empty__hint">[작업자] 탭에서 입장 처리하세요.</span>
+          <span class="empty__hint">[준비] 탭에서 점검 후 입장 처리하세요.</span>
         </div>
 
         <!-- 좌상단: 현장 실시간 정보 -->
@@ -172,8 +230,9 @@
 
           <!-- 액션 -->
           <div class="ar-actions">
-            <button class="btn btn--sm btn--respond" id="sd-respond" hidden>안전확인 응답</button>
-            <button class="btn btn--sm btn--exit" id="sd-exit">퇴장</button>
+            <button class="btn btn--sm btn--radio" id="sd-radio">무전</button>
+            <button class="btn btn--sm btn--rescue" id="sd-rescue">구조</button>
+            <button class="btn btn--sm btn--exit" id="sd-exit">복귀</button>
           </div>
         </div>
 
@@ -182,26 +241,37 @@
       </div>
     </section>
 
-    <!-- ---------- 작업자 관리 ---------- -->
-    <section class="view" id="view-workers" hidden>
-      <div class="inside-banner inside-banner--mini">
-        <div class="inside-banner__count"><span id="inside-count-2">0</span><small>명 내부</small></div>
-        <button class="btn btn--primary" id="add-worker-btn">＋ 작업자 등록</button>
-      </div>
-      <div class="worker-list" id="worker-list"></div>
-      <div class="empty" id="workers-empty">
-        등록된 작업자가 없습니다.<br />
-        <span class="empty__hint">＋ 작업자 등록 버튼으로 추가하세요.</span>
-      </div>
-    </section>
+    <!-- ---------- 준비 (작업 전 점검 + 작업자 입장) ---------- -->
+    <section class="view" id="view-prep" hidden>
 
-    <!-- ---------- 작업 전 체크리스트 ---------- -->
-    <section class="view" id="view-checklist" hidden>
-      <p class="view-lead">작업 시작 전 아래 항목을 모두 확인하세요. 모두 완료해야 작업을 시작할 수 있습니다.</p>
-      <div class="checklist" id="checklist"></div>
-      <div class="checklist-footer">
-        <div class="checklist-progress" id="checklist-progress">0 / 6 완료</div>
-        <button class="btn btn--xl btn--start" id="start-work-btn" disabled>작업 시작</button>
+      <!-- 1단계: 입장 전 안전점검 -->
+      <div class="prep-step">
+        <div class="prep-step__head">
+          <span class="prep-step__no">1</span>
+          <div class="prep-step__t">
+            <h2 class="prep-step__title">입장 전 안전점검</h2>
+            <p class="prep-step__sub">6개 항목을 모두 확인해야 작업자 입장이 열립니다.</p>
+          </div>
+          <span class="prep-gate" id="prep-gate">0 / 6</span>
+        </div>
+        <div class="checklist" id="checklist"></div>
+      </div>
+
+      <!-- 2단계: 작업자 입장 -->
+      <div class="prep-step" id="prep-workers-step">
+        <div class="prep-step__head">
+          <span class="prep-step__no">2</span>
+          <div class="prep-step__t">
+            <h2 class="prep-step__title">작업자 입장</h2>
+            <p class="prep-step__sub" id="prep-workers-sub">점검 완료 후 입장을 진행하세요.</p>
+          </div>
+          <button class="btn btn--sm btn--primary" id="add-worker-btn">＋ 등록</button>
+        </div>
+        <div class="worker-list" id="worker-list"></div>
+        <div class="empty" id="workers-empty">
+          등록된 작업자가 없습니다.<br />
+          <span class="empty__hint">＋ 등록 버튼으로 작업자를 추가하세요.</span>
+        </div>
       </div>
     </section>
 
@@ -227,7 +297,7 @@
       </div>
     </section>
 
-    <!-- ---------- 설정 ---------- -->
+    <!-- ---------- 설정 (상단 ⚙ 로 진입) ---------- -->
     <section class="view" id="view-settings" hidden>
       <div class="settings-group">
         <h3 class="settings-group__title">안전 확인</h3>
@@ -282,27 +352,21 @@
         <button class="btn btn--block" id="export-btn">데이터 내보내기 (JSON)</button>
         <button class="btn btn--block btn--danger-outline" id="reset-btn">모든 데이터 초기화</button>
       </div>
-      <p class="app-version">밀폐공간 안전관리 앱 · 로컬 저장(localStorage) · v1.0</p>
+      <p class="app-version">밀폐공간 안전관리 앱 · 로컬 저장(localStorage) · v2.0</p>
     </section>
   </main>
 
-  <!-- ===================== 하단 탭 네비게이션 ===================== -->
+  <!-- ===================== 하단 탭 네비게이션 (3단계 흐름) ===================== -->
   <nav class="tabbar" id="tabbar">
     <button class="tab is-active" data-view="dashboard">
-      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">대시보드</span>
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">감시</span>
     </button>
-    <button class="tab" data-view="workers">
-      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">작업자</span>
+    <button class="tab" data-view="prep">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">준비</span>
       <span class="tab__badge" id="tab-inside-badge" hidden>0</span>
-    </button>
-    <button class="tab" data-view="checklist">
-      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">체크리스트</span>
     </button>
     <button class="tab" data-view="records">
       <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">기록</span>
-    </button>
-    <button class="tab" data-view="settings">
-      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">설정</span>
     </button>
   </nav>
 
@@ -316,8 +380,12 @@
         <input type="text" id="wf-name" placeholder="예: 홍길동" autocomplete="off" />
       </label>
       <label class="field">
-        <span class="field__label">위치 / 작업 구역</span>
-        <input type="text" id="wf-location" placeholder="예: 3구역 A맨홀" autocomplete="off" />
+        <span class="field__label">맨홀 번호 (작업 위치)</span>
+        <select id="wf-mh"></select>
+      </label>
+      <label class="field">
+        <span class="field__label">작업 구역 상세 (선택)</span>
+        <input type="text" id="wf-location" placeholder="예: 3구역 우수관" autocomplete="off" />
       </label>
       <label class="field">
         <span class="field__label">연락처 (선택)</span>
@@ -330,8 +398,44 @@
     </div>
   </div>
 
+  <!-- ===================== 무전 모달 ===================== -->
+  <div class="modal" id="radio-modal" hidden>
+    <div class="modal__backdrop" data-close-radio></div>
+    <div class="modal__sheet">
+      <h3 class="modal__title"><span class="radio-mark">📻</span> 무전 · <span id="radio-title">-</span></h3>
+      <div class="radio-log" id="radio-log"></div>
+      <div class="radio-empty" id="radio-empty">교신 내역이 없습니다. 아래에서 지시를 전송하세요.</div>
+      <div class="radio-presets" id="radio-presets"></div>
+      <div class="radio-input">
+        <input type="text" id="radio-text" placeholder="지시사항 입력…" autocomplete="off" />
+        <button class="btn btn--primary btn--sm" id="radio-send">전송</button>
+      </div>
+      <div class="modal__actions">
+        <button class="btn btn--ghost" data-close-radio>닫기</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===================== 토스트 ===================== -->
   <div class="toast" id="toast" hidden></div>
+
+    </div><!-- /.screen -->
+  </div><!-- /.device -->
+
+  <!-- 스플래시 부팅 문구 (앱 실행 연출) -->
+  <script>
+    (function(){
+      var foot = document.getElementById('splash-foot');
+      if(!foot) return;
+      var msgs = ['시스템 초기화 중…','센서·통신 점검 중…','관제 화면 준비 완료'];
+      var i = 0;
+      var timer = setInterval(function(){
+        i++;
+        if(i < msgs.length){ foot.textContent = msgs[i]; }
+        else { clearInterval(timer); }
+      }, 750);
+    })();
+  </script>
 
   <script src="app.js"></script>
 </body>

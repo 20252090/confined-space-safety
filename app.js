@@ -26,9 +26,10 @@ const CHECK_ITEMS = [
 
 function defaultState(){
   return {
-    workers: [],          // {id,name,location,phone,inside,enteredAt,lastResponseAt,alarmedResponse}
-    logs: [],             // 작업 일지 {id,name,location,enteredAt,exitedAt,durationSec,checklistPassed}
+    workers: [],          // {id,name,location,phone,assignedMh,connState,connAt,inside,enteredAt,lastResponseAt,mh,logId}
+    logs: [],             // 작업 일지 {id,name,location,mh,enteredAt,exitedAt,durationSec,checklistPassed}
     alarms: [],           // 경보 이력 {id,ts,level,type,message,who}
+    comms: [],            // 무전 교신 {id,ts,workerId,dir:'out'|'in',text}
     checklist: Object.fromEntries(CHECK_ITEMS.map(c=>[c.key,false])),
     settings: {
       intervalMin: 5,
@@ -192,6 +193,8 @@ function gasStatus(kind, val){
 
 /* 작업자 종합 상태 판정 → {level, note} */
 function evalWorker(w){
+  if(w.connState==='connecting') return { level:'ok', note:'AR·태블릿 연결 중', connecting:true };
+  if(w.returning) return { level:'ok', note:'복귀 중', returning:true };
   const g = gasCache.get(w.id) || simGas(w);
   const gasLevels = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)];
   const gasDanger = gasLevels.includes('danger');
@@ -203,13 +206,22 @@ function evalWorker(w){
   const graceMs    = state.settings.graceSec*1000;
   const sinceResp  = now() - (w.lastResponseAt || w.enteredAt || now());
   const overdue    = sinceResp - intervalMs;   // >0 이면 확인 요청 시점 경과
+  const still      = isStill(w);               // 무움직임(정지) 여부
 
-  // ── 위험(danger) 판정: 가스 / 미응답 / 생체 이상 ──
+  // ── 위험(danger) 판정 ──
+  // 가스·생체 위험은 즉시 위험. 안전확인 무응답은 '움직임이 없고 위험 수준'일 때만 119·구조로 격상한다.
   if(gasDanger) return { level:'danger', note:'가스 임계치 초과' };
-  if(overdue > graceMs) return { level:'danger', note:'안전확인 미응답' };
   if(vs.level==='danger') return { level:'danger', note:'생체 위험 · '+vs.note };
-  // ── 주의(warn) 판정 ──
-  if(overdue > 0) return { level:'warn', note:'안전확인 요청 중', needRespond:true, remain:Math.ceil((graceMs-overdue)/1000) };
+  if(overdue > graceMs && still) return { level:'danger', note:'119 연락 · 무응답·무움직임', noMove:true };
+
+  // ── 안전확인 응답(작업자 몫) 단계적 경고 ──
+  //   ① 요청 중(응답 대기) → ② 무전 확인 → ③ 퇴장 권고
+  if(overdue > 0){
+    if(overdue <= graceMs)   return { level:'warn', note:'안전확인 요청 중', needRespond:true, remain:Math.ceil((graceMs-overdue)/1000) };
+    if(overdue <= graceMs*2) return { level:'warn', note:'무전 확인 중', radioCall:true };
+    return { level:'warn', note:'퇴장 권고 · 안전확인 무응답', exitUrge:true };
+  }
+  // ── 그 외 주의(warn) 판정 ──
   if(gasWarn) return { level:'warn', note:'가스 농도 주의' };
   if(vs.level==='warn') return { level:'warn', note:'생체 주의 · '+vs.note };
 
@@ -219,7 +231,8 @@ function evalWorker(w){
 
 /* ============================ 4. 렌더링 ============================ */
 let currentView = 'dashboard';
-const VIEW_TITLES = { dashboard:'실시간 대시보드', workers:'작업자 관리', checklist:'작업 전 체크리스트', records:'기록', settings:'설정' };
+const VIEW_TITLES = { dashboard:'실시간 감시', prep:'작업 준비', records:'기록', settings:'설정' };
+const PHASE_LABELS = { dashboard:'감시', prep:'준비', records:'기록', settings:'설정' };
 
 function insideWorkers(){ return state.workers.filter(w=>w.inside); }
 
@@ -228,25 +241,37 @@ function switchView(view){
   closeDetail();
   $$('.view').forEach(v=>v.hidden = (v.id !== 'view-'+view));
   $$('.tab').forEach(t=>t.classList.toggle('is-active', t.dataset.view===view));
+  $('#settings-btn').classList.toggle('is-active', view==='settings');
   $('#view-title').textContent = VIEW_TITLES[view] || '';
+  const ph = $('#statstrip-phase'); if(ph) ph.textContent = PHASE_LABELS[view] || '';
   renderView(view);
-  window.scrollTo(0,0);
+  const appEl = $('#app'); if(appEl) appEl.scrollTop = 0;
 }
 
 function renderView(view){
   if(view==='dashboard') renderDashboard(true);
-  else if(view==='workers') renderWorkers();
-  else if(view==='checklist') renderChecklist();
+  else if(view==='prep') renderPrep();
   else if(view==='records') renderRecords();
   else if(view==='settings') renderSettings();
 }
 
-/* ---------- 공통: 내부 인원 표시 ---------- */
+/* ---------- 공통: 내부 인원 · 상단 상태 스트립 ---------- */
 function renderInsideCounts(){
   const n = insideWorkers().length;
-  const c2 = $('#inside-count-2'); if(c2) c2.textContent = n;
   const badge = $('#tab-inside-badge');
-  badge.textContent = n; badge.hidden = n===0;
+  if(badge){ badge.textContent = n; badge.hidden = n===0; }
+  updateStatStrip();
+}
+
+/* 상단 상시 상태 스트립: 모든 화면에서 내부 인원·등급 노출 */
+function updateStatStrip(){
+  const list = insideWorkers();
+  const c = {ok:0,warn:0,danger:0};
+  list.forEach(w=>c[evalWorker(w).level]++);
+  const set=(id,v)=>{ const e=$(id); if(e) e.textContent=v; };
+  set('#ss-inside', list.length);
+  set('#ss-ok', c.ok); set('#ss-warn', c.warn); set('#ss-danger', c.danger);
+  const strip = $('#statstrip'); if(strip) strip.classList.toggle('has-danger', c.danger>0);
 }
 
 /* ---------- 대시보드 (관제 뷰) ---------- */
@@ -393,22 +418,42 @@ function freeSlot(){
 /* 작업자 실시간 위치/이동 상태 (입구 하강 + 무작위 이동/정지) */
 const wpos = new Map();                 // id -> {x,y,cx,cy,tx,ty,st,until}
 /* 이동 파라미터(화면상 또렷하게 보이도록 조정) */
-const DESCEND_SPEED = 5.0;              // 입구→작업심도 하강 속도(세로 %/s)
-const MOVE_SPEED    = 2.4;              // 관로 내 이동 속도(가로 %/s) — 걸어다니는 느낌
+const DESCEND_SPEED = 2.6;              // 입구→작업심도 하강 속도(세로 %/s)
+const MOVE_SPEED    = 1.2;              // 관로 내 이동 속도(가로 %/s) — 천천히 걷는 느낌
 const WANDER_X = 3.6;                   // 작업 반경(맨홀 기준 좌우 ±%)
 const WANDER_Y = 1.4;                   // 관 내부 상하 여유(±%)
 const WANDER_MIN_X = 11, WANDER_MAX_X = 53;   // 이동 허용 구간(좌우 패널·가장자리 회피)
 const rnd = (a,b)=> a + Math.random()*(b-a);
 
+/* 무움직임(정지) 감지 — 이 시간 동안 위치 변화가 없으면 '움직임 없음'으로 간주.
+   무의식·쓰러짐의 신호로, 안전확인 무응답과 겹치면 119·구조로 격상하는 조건이 된다. */
+const STILL_MS = 12000;
+function isStill(w){
+  const p = wpos.get(w.id);
+  if(!p || p.st==='connect') return false;          // 연결 대기 중엔 판정 보류
+  return now() - (p.lastMoveAt || w.enteredAt || now()) >= STILL_MS;
+}
+/* 안전확인이 얼마나 지났는지(ms). >0 이면 확인 주기 경과 */
+function overdueMs(w){ return now() - (w.lastResponseAt || w.enteredAt || now()) - state.settings.intervalMin*60*1000; }
+/* 무전 확인 단계까지 지나도 무응답이면 작업자가 이동을 멈춘 것으로 본다(정지 유지 → 무움직임 격상) */
+function nonRespondFrozen(w){ return overdueMs(w) > state.settings.graceSec*1000*2; }
+
 function ensureWpos(id, mh){
   let p = wpos.get(id);
-  if(!p){ const cy = depthY(mh.depth)-TUBE/2; p = { x:mh.x, y:cy, cx:mh.x, cy, tx:mh.x, ty:cy, st:'pause', until:0 }; wpos.set(id, p); }
+  if(!p){ const cy = depthY(mh.depth)-TUBE/2; p = { x:mh.x, y:cy, cx:mh.x, cy, tx:mh.x, ty:cy, st:'pause', until:0, lastMoveAt:now() }; wpos.set(id, p); }
   return p;
 }
-/* 입장: 입구(지표면)에서 작업 심도까지 하강 시작 */
+/* 입장 직후: AR·태블릿 연결 대기 (지표면에서 대기, 하강 보류) */
+function startConnect(id, mh){
+  const cy = depthY(mh.depth)-TUBE/2;
+  wpos.set(id, { x:mh.x, y:SURF+1, cx:mh.x, cy, tx:mh.x, ty:SURF+1, st:'connect', until:0, lastMoveAt:now() });
+}
+/* 연결 완료: 입구(지표면)에서 작업 심도까지 하강 시작 */
 function startDescent(id, mh){
   const cy = depthY(mh.depth)-TUBE/2;
-  wpos.set(id, { x:mh.x, y:SURF+1, cx:mh.x, cy, tx:mh.x, ty:cy, st:'descend', until:0 });
+  const p = wpos.get(id);
+  const y = p ? p.y : SURF+1;
+  wpos.set(id, { x:mh.x, y, cx:mh.x, cy, tx:mh.x, ty:cy, st:'descend', until:0, lastMoveAt:now() });
 }
 function curDepthOf(id, fallback){
   const p = wpos.get(id);
@@ -425,7 +470,7 @@ function renderDashboard(structure){
   list.forEach(w=>{
     const g = simGas(w), vr = simVitals(w), ev = evalWorker(w);
     const el = $(`#mk-${w.id}`); if(!el) return;
-    el.className = `mk is-${ev.level}`;
+    el.className = `mk is-${ev.level}${ev.connecting?' is-connecting':''}`;
     const mh = workerMH.get(w.id);
     $('.mk__meta',el).textContent = `${mh?mh.label:''} · 심도 ${curDepthOf(w.id, mh?mh.depth:0).toFixed(1)}m · ${fmtDur((now()-w.enteredAt)/1000)}`;
     $('.mk__gas',el).textContent  = `O₂ ${g.o2.toFixed(1)} · H₂S ${g.h2s.toFixed(0)} · CO ${g.co.toFixed(0)}`;
@@ -561,20 +606,32 @@ function animateWorkers(t){
   if(currentView!=='dashboard') return;
   insideWorkers().forEach(w=>{
     const p=wpos.get(w.id); if(!p) return;
-    if(p.st==='descend'){
+    if(p.st==='connect'){
+      // AR·태블릿 연결 대기 — 지표면에서 정지
+    } else if(p.st==='ascend'){
+      // 복귀 — 맨홀 위(지표면)로 천천히 상승
+      p.x=p.cx;
+      p.y=Math.max(SURF+1, p.y - ASCEND_SPEED*dt);
+      p.lastMoveAt=now();
+      if(p.y<=SURF+1.1){ p.y=SURF+1; finalizeReturn(w.id); return; }
+    } else if(p.st==='descend'){
       p.x=p.cx;
       p.y=Math.min(p.cy, p.y + DESCEND_SPEED*dt);
-      if(p.y>=p.cy-0.15){ p.y=p.cy; p.st='pause'; p.until=t+rnd(1500,3500); }
+      p.lastMoveAt=now();
+      if(p.y>=p.cy-0.15){ p.y=p.cy; p.st='pause'; p.until=t+rnd(3000,6000); }
     } else if(p.st==='pause'){
-      if(t>=p.until){
+      // 안전확인 무응답이 무전 단계까지 지속되면 이동을 멈춘다(정지 유지 → 무움직임 격상)
+      if(nonRespondFrozen(w)){ p.until=t+1500; }
+      else if(t>=p.until){
         p.tx = clamp(p.cx + rnd(-WANDER_X, WANDER_X), WANDER_MIN_X, WANDER_MAX_X);
         p.ty = pipeCenterY(p.tx) + rnd(-WANDER_Y, WANDER_Y);  // 관로 경사를 따라가 항상 관 안에 머문다
         p.st='move';
       }
     } else {
       const dx=p.tx-p.x, dy=p.ty-p.y, d=Math.hypot(dx,dy), step=MOVE_SPEED*dt;
-      if(d<=step){ p.x=p.tx; p.y=p.ty; p.st='pause'; p.until=t+rnd(2000,5000); }
+      if(d<=step){ p.x=p.tx; p.y=p.ty; p.st='pause'; p.until=t+rnd(4500,9000); }
       else { p.x+=dx/d*step; p.y+=dy/d*step; }
+      p.lastMoveAt=now();
     }
     const el=document.getElementById('mk-'+w.id);
     if(el){ el.style.left=p.x+'%'; el.style.top=p.y+'%'; }
@@ -599,7 +656,7 @@ function syncDetail(){
   // 상태 칩
   const chip = $('#ar-status');
   chip.className = 'ar-chip is-'+ev.level;
-  chip.textContent = ev.level==='danger'?'위험':ev.level==='warn'?'주의':'정상';
+  chip.textContent = ev.connecting ? 'AR 연결 중' : (ev.level==='danger'?'위험':ev.level==='warn'?'주의':'정상');
 
   // 가스 스트립
   const setG = (wrapId, valId, kind, val, dec)=>{
@@ -620,19 +677,36 @@ function syncDetail(){
   $('#ar-temp-w').className = 'ar-strip__v is-'+tempStat(vr.temp);
   $('#ar-depthv').textContent = curDepthOf(selectedId, mh?mh.depth:0).toFixed(1);
 
-  // 경고
+  // 경고 배너: 위험=119·구조 / 무전 확인 / 퇴장 권고
   const warn = $('#ar-warn');
-  warn.hidden = ev.level!=='danger';
-  warn.textContent = ev.note;
+  if(ev.level==='danger'){ warn.hidden=false; warn.className='ar-warn is-danger'; warn.textContent=ev.noMove ? ev.note : ('구조 필요 · '+ev.note); }
+  else if(ev.radioCall){ warn.hidden=false; warn.className='ar-warn is-warn'; warn.textContent='무전으로 안전확인 요청 중 — 작업자 응답 대기'; }
+  else if(ev.level==='warn' && ev.note!=='안전확인 요청 중'){ warn.hidden=false; warn.className='ar-warn is-warn'; warn.textContent=ev.exitUrge ? ev.note : ('주의 · '+ev.note); }
+  else { warn.hidden=true; }
 
-  $('#sd-respond').hidden = !(ev.needRespond || ev.note==='안전확인 미응답');
+  // 복귀 버튼 상태 / 구조 버튼 강조
+  const exitBtn = $('#sd-exit');
+  exitBtn.disabled = !!w.returning;
+  exitBtn.textContent = w.returning ? '복귀 중…' : '복귀';
+  // 구조 버튼: 주의·위험일 때만 노출, 정상으로 돌아오면 사라짐
+  const rescueBtn = $('#sd-rescue');
+  rescueBtn.hidden = ev.level==='ok';
+  rescueBtn.classList.toggle('is-hot', ev.level==='danger');
 }
 
-/* ---------- 작업자 관리 ---------- */
-function renderWorkers(){
+/* ---------- 준비: 입장 전 점검 + 작업자 입장 (통합) ---------- */
+function renderPrep(){
   renderInsideCounts();
+  renderChecklist();
+  renderWorkerList();
+}
+
+/* 작업자 목록(입장/퇴장/수정/삭제). 입장은 체크리스트 완료 시에만 활성 */
+function renderWorkerList(){
   const wrap = $('#worker-list');
+  if(!wrap) return;
   $('#workers-empty').hidden = state.workers.length>0;
+  const canEnter = allChecked();
   wrap.innerHTML = state.workers.map(w=>{
     const dur = w.inside ? fmtDurKo((now()-w.enteredAt)/1000) : null;
     return `
@@ -640,15 +714,15 @@ function renderWorkers(){
       <div class="wrow__top">
         <div>
           <div class="wrow__name">${escapeHtml(w.name)}</div>
-          <div class="wrow__loc">${escapeHtml(w.location||'위치 미지정')}</div>
+          <div class="wrow__loc">${w.assignedMh&&MH_BY_ID[w.assignedMh]?`<b class="wrow__mh">${MH_BY_ID[w.assignedMh].label}</b> · `:'<b class="wrow__mh is-unset">맨홀 미지정</b> · '}${escapeHtml(w.location||'구역 상세 없음')}</div>
           ${w.phone?`<div class="wrow__phone">${escapeHtml(w.phone)}</div>`:''}
         </div>
-        ${w.inside?`<span class="badge-inside">내부 · ${dur}</span>`:''}
+        ${w.inside?`<span class="badge-inside${w.connState==='connecting'?' is-connecting':''}">${w.connState==='connecting'?'AR 연결 중':w.returning?'복귀 중':'내부 · '+dur}</span>`:''}
       </div>
       <div class="wrow__actions">
         ${w.inside
-          ? `<button class="btn btn--exit" data-act="exit" data-id="${w.id}">퇴장</button>`
-          : `<button class="btn btn--enter" data-act="enter" data-id="${w.id}">입장</button>`}
+          ? `<button class="btn btn--exit" data-act="return" data-id="${w.id}" ${w.returning?'disabled':''}>${w.returning?'복귀 중…':'복귀'}</button>`
+          : `<button class="btn btn--enter" data-act="enter" data-id="${w.id}" ${canEnter?'':'disabled'}>입장</button>`}
         <div class="wrow__edit">
           <button class="btn btn--sm btn--ghost" data-act="edit" data-id="${w.id}">수정</button>
           <button class="btn btn--sm btn--ghost" data-act="delete" data-id="${w.id}">삭제</button>
@@ -658,9 +732,10 @@ function renderWorkers(){
   }).join('');
 }
 
-/* ---------- 체크리스트 ---------- */
+/* ---------- 체크리스트(준비 1단계) ---------- */
 function renderChecklist(){
   const wrap = $('#checklist');
+  if(!wrap) return;
   wrap.innerHTML = CHECK_ITEMS.map(c=>`
     <div class="check-item ${state.checklist[c.key]?'is-done':''}" data-check="${c.key}">
       <div class="check-box">
@@ -671,14 +746,20 @@ function renderChecklist(){
         <div class="check-text__desc">${c.desc}</div>
       </div>
     </div>`).join('');
-  updateChecklistFooter();
+  updatePrepGate();
 }
 function checklistDone(){ return CHECK_ITEMS.filter(c=>state.checklist[c.key]).length; }
 function allChecked(){ return checklistDone()===CHECK_ITEMS.length; }
-function updateChecklistFooter(){
-  const done = checklistDone();
-  $('#checklist-progress').textContent = `${done} / ${CHECK_ITEMS.length} 완료`;
-  $('#start-work-btn').disabled = !allChecked();
+
+/* 점검 진행률 → 2단계(입장) 잠금/해제 */
+function updatePrepGate(){
+  const done = checklistDone(), total = CHECK_ITEMS.length, ok = done===total;
+  const gate = $('#prep-gate');
+  if(gate){ gate.textContent = `${done} / ${total}`; gate.classList.toggle('is-done', ok); }
+  const step = $('#prep-workers-step'); if(step) step.classList.toggle('is-locked', !ok);
+  const sub = $('#prep-workers-sub');
+  if(sub) sub.textContent = ok ? '점검 완료 — 입장할 수 있습니다.' : `점검 ${total-done}개 남음 — 완료하면 입장이 열립니다.`;
+  $$('#worker-list [data-act="enter"]').forEach(b=>{ b.disabled = !ok; });
 }
 
 /* ---------- 기록 ---------- */
@@ -702,7 +783,7 @@ function renderJournal(){
         <div class="jrow__name">${escapeHtml(l.name)}</div>
         <div class="jrow__dur">${l.exitedAt?fmtDurKo(l.durationSec):'작업 중'}</div>
       </div>
-      <div class="jrow__loc" style="font-size:14px;color:var(--txt-3);margin-top:2px">${escapeHtml(l.location||'')}</div>
+      <div class="jrow__loc" style="font-size:14px;color:var(--txt-3);margin-top:2px">${l.mh&&MH_BY_ID[l.mh]?MH_BY_ID[l.mh].label+(l.location?' · ':''):''}${escapeHtml(l.location||'')}</div>
       <div class="jrow__times">입장 ${fmtHM(l.enteredAt)} ${l.exitedAt?`· 퇴장 ${fmtHM(l.exitedAt)}`:''}</div>
       <div class="jrow__chk ${l.checklistPassed?'ok':'no'}">체크리스트 ${l.checklistPassed?'완료 후 시작':'미기록'}</div>
     </div>`).join('');
@@ -749,60 +830,109 @@ function addAlarm(level, message, who){
 function enterWorker(id){
   const w = state.workers.find(x=>x.id===id); if(!w||w.inside) return;
   if(!allChecked()){
-    toast('작업 전 체크리스트를 모두 완료하세요.', 'danger');
-    switchView('checklist');
+    toast('입장 전 안전점검 6개 항목을 모두 완료하세요.', 'danger');
+    if(currentView!=='prep') switchView('prep');
+    const cl = $('#checklist');
+    if(cl){ cl.scrollIntoView({behavior:'smooth', block:'center'}); cl.classList.add('flash'); setTimeout(()=>cl.classList.remove('flash'), 1200); }
     return;
   }
+  // 맨홀 지정 필수 + 중복 점유 차단
+  if(!w.assignedMh || !MH_BY_ID[w.assignedMh]){
+    toast('맨홀 번호를 먼저 지정하세요. [수정]에서 설정할 수 있습니다.','danger');
+    openModal(w.id); return;
+  }
+  const mhId = w.assignedMh;
+  if(insideWorkers().some(o=>o.mh===mhId)){
+    toast(`${MH_BY_ID[mhId].label} 맨홀에 이미 작업 중인 작업자가 있습니다.`,'danger'); return;
+  }
+
   w.inside = true;
   w.enteredAt = now();
-  w.lastResponseAt = now();
+  w.lastResponseAt = now();                // (연결 완료 시 재설정 → 안전확인 주기 시작)
   w.logId = uid();
-  w.mh = freeSlot();                       // 맨홀 배정
-  startDescent(w.id, MH_BY_ID[w.mh]);      // 입구(지표면)에서 하강 시작
-  state.logs.push({ id:w.logId, name:w.name, location:w.location, enteredAt:w.enteredAt, exitedAt:null, durationSec:0, checklistPassed:true });
+  w.mh = mhId;                             // 지정 맨홀 사용
+  w.connState = 'connecting';              // AR·태블릿 연결 대기
+  w.connAt = now();
+  startConnect(w.id, MH_BY_ID[w.mh]);      // 지표면에서 연결 대기(하강 보류)
+  state.logs.push({ id:w.logId, name:w.name, location:w.location, mh:w.mh, enteredAt:w.enteredAt, exitedAt:null, durationSec:0, checklistPassed:true });
   gasCache.delete(w.id);
   save();
-  toast(`${w.name} 입장 · ${fmtHM(w.enteredAt)}`, 'ok');
+  toast(`${w.name} 입장 · ${MH_BY_ID[w.mh].label} · AR·태블릿 연결 중…`, 'ok');
   refreshAll();
 }
 
-function exitWorker(id){
+/* AR·태블릿 연결 완료 시 실제 작업(하강/감시) 시작 */
+const CONNECT_MS = 2600;
+function promoteConnections(){
+  let changed = false;
+  insideWorkers().forEach(w=>{
+    if(w.connState==='connecting' && now()-(w.connAt||0) >= CONNECT_MS){
+      w.connState = 'connected';
+      w.lastResponseAt = now();                 // 안전확인 주기는 작업 시작(연결) 시점부터
+      startDescent(w.id, MH_BY_ID[w.mh]);       // 연결 완료 → 하강 시작
+      addComm(w.id, 'in', '연결 완료 · 작업 시작, 이상 없음');
+      toast(`${w.name} AR·태블릿 연결 완료 · 작업 시작`, 'ok');
+      changed = true;
+    }
+  });
+  if(changed){ save(); if(currentView==='dashboard') renderDashboard(true); }
+}
+function mhLabel(w){ return (w && MH_BY_ID[w.mh] && MH_BY_ID[w.mh].label) || (w&&w.location) || ''; }
+
+/* 복귀 요청 — 맨홀 위(지표면)로 천천히 상승 시작. 도달 시 finalizeReturn */
+const ASCEND_SPEED = 1.4;   // 상승 속도(세로 %/s) — 하강보다 느리게(천천히 복귀)
+function requestReturn(id){
+  const w = state.workers.find(x=>x.id===id); if(!w||!w.inside||w.returning) return;
+  // 연결 중(아직 하강 전)이면 즉시 복귀 확정
+  if(w.connState==='connecting'){ finalizeReturn(id); return; }
+  w.returning = true;
+  const p = wpos.get(id);
+  if(p){ p.st='ascend'; p.tx=p.cx; p.ty=SURF+1; } else { finalizeReturn(id); return; }
+  clearWorkerFlags(id);
+  if(rescueTargetId===id) closeRescue();
+  save();
+  toast(`${w.name} 복귀 중 — 맨홀로 상승`, 'ok');
+  refreshAll();
+}
+
+/* 지표면 도달 → 완전 복귀(입출입 기록 마감·상태 정리) */
+function finalizeReturn(id){
   const w = state.workers.find(x=>x.id===id); if(!w||!w.inside) return;
-  w.inside = false;
+  w.inside = false; w.returning = false;
   const exitedAt = now();
   const log = state.logs.find(l=>l.id===w.logId);
   if(log){ log.exitedAt = exitedAt; log.durationSec = Math.floor((exitedAt-log.enteredAt)/1000); }
-  toast(`${w.name} 퇴장 · 작업 ${fmtDurKo((exitedAt-w.enteredAt)/1000)}`, 'ok');
-  w.enteredAt = null; w.logId = null; w.mh = null;
+  toast(`${w.name} 복귀 완료 · 작업 ${fmtDurKo((exitedAt-(w.enteredAt||exitedAt))/1000)}`, 'ok');
+  w.enteredAt = null; w.logId = null; w.mh = null; w.connState = 'idle'; w.connAt = null;
   gasCache.delete(w.id); vitalsCache.delete(w.id); wpos.delete(w.id);
+  clearWorkerFlags(w.id);
+  if(rescueTargetId===id) closeRescue();
+  if(selectedId===id) closeDetail();
   save();
   refreshAll();
 }
 
-function respondWorker(id){
-  const w = state.workers.find(x=>x.id===id); if(!w) return;
-  w.lastResponseAt = now();
-  save();
-  toast(`${w.name} 안전확인 완료`, 'ok');
-  renderDashboard(true);
-}
+/* 안전확인 응답은 '작업자'만 한다 — 관제(관리자)가 대신 눌러 확인 처리하지 않는다.
+   작업자의 무전 응답(addComm 'in')이 오면 lastResponseAt 가 갱신되어 정상으로 복귀한다. */
 
 function saveWorkerFromModal(){
   const name = $('#wf-name').value.trim();
+  const mh = $('#wf-mh').value;
   const location = $('#wf-location').value.trim();
   const phone = $('#wf-phone').value.trim();
   if(!name){ toast('이름을 입력하세요.','danger'); return; }
+  if(!mh || !MH_BY_ID[mh]){ toast('맨홀 번호를 선택하세요.','danger'); return; }
   if(editingId){
     const w = state.workers.find(x=>x.id===editingId);
-    if(w){ w.name=name; w.location=location; w.phone=phone; }
+    if(w){ w.name=name; w.assignedMh=mh; w.location=location; w.phone=phone; }
     toast('작업자 정보를 수정했습니다.','ok');
   }else{
-    state.workers.push({ id:uid(), name, location, phone, inside:false, enteredAt:null, lastResponseAt:null, logId:null });
+    state.workers.push({ id:uid(), name, assignedMh:mh, location, phone, inside:false, connState:'idle', enteredAt:null, lastResponseAt:null, logId:null });
     toast('작업자를 등록했습니다.','ok');
   }
   save();
   closeModal();
-  renderWorkers();
+  renderPrep();
 }
 
 function deleteWorker(id){
@@ -812,31 +942,29 @@ function deleteWorker(id){
   state.workers = state.workers.filter(x=>x.id!==id);
   gasCache.delete(id); vitalsCache.delete(id); wpos.delete(id);
   save();
-  renderWorkers();
+  renderPrep();
 }
 
 /* ---------- SOS / 전체 대피 ---------- */
 function triggerSOS(){
   const inside = insideWorkers();
-  if(!confirm('전체 대피 경보를 발령합니다. 계속하시겠습니까?')) return;
+  if(!confirm('전체 대피 경보를 발령하고 전원 복귀시킵니다. 계속하시겠습니까?')) return;
   addAlarm('danger', '전체 대피(SOS) 발령', inside.length?`내부 인원 ${inside.length}명`:'현재 내부 인원 없음');
-  showAlarmOverlay('전체 대피', inside.length? `내부 ${inside.length}명 — 즉시 전원 대피시키세요` : '모든 작업자를 즉시 대피시키세요');
-}
-function showAlarmOverlay(title, desc){
-  $('#alarm-overlay-title').textContent = title;
-  $('#alarm-overlay-desc').textContent = desc;
-  $('#alarm-overlay').hidden = false;
+  addAlarm('danger', '119 신고 전화 발신', '전체 대피');
+  // 상단만 빨간 테마 점멸 + 배너
+  document.body.classList.add('sos-active');
+  $('#sos-banner').hidden = false;
+  // 전원 대피 → 맨홀 위로 상승 후 복귀(눈에 보이게)
+  inside.forEach(w=>requestReturn(w.id));
   if(navigator.vibrate) navigator.vibrate([300,120,300,120,300]);
+  toast(inside.length?`전체 대피 발령 · 119 신고 · ${inside.length}명 복귀`:'전체 대피 발령 · 119 신고', 'danger');
 }
-function closeAlarmOverlay(){ $('#alarm-overlay').hidden = true; }
-
-/* ---------- 시작/초기화/내보내기 ---------- */
-function startWork(){
-  if(!allChecked()) return;
-  toast('작업 전 점검 완료. 작업자 입장을 진행하세요.','ok');
-  switchView('workers');
+function clearSOS(){
+  document.body.classList.remove('sos-active');
+  $('#sos-banner').hidden = true;
 }
 
+/* ---------- 초기화/내보내기 ---------- */
 function exportData(){
   const blob = new Blob([JSON.stringify(state,null,2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -852,49 +980,186 @@ function resetAll(){
 }
 
 /* ============================ 경보 자동 감지 ============================ */
-/* 루프에서 호출: 상태가 danger 로 전이되는 순간 1회만 이력 기록 */
-const alarmedSet = new Set();  // workerId::type 중복 방지
+/* 루프에서 호출: 상태 전이 순간 1회만 기록.
+   주의(warn) → 퇴장 권고 / 위험(danger) → 구조 알림 */
+const alarmedSet = new Set();   // danger 이력 중복 방지 (id::type)
+const warnedSet  = new Set();   // 퇴장 권고 중복 방지 (id::warn)
+const rescueSet  = new Set();   // 구조 알림 중복 방지 (id)
+function clearWorkerFlags(id){
+  ['::gas','::resp','::vital','::warn','::radio'].forEach(s=>{ alarmedSet.delete(id+s); warnedSet.delete(id+s); });
+  rescueSet.delete(id);
+}
+
 function autoDetectAlarms(){
   insideWorkers().forEach(w=>{
+    if(w.connState==='connecting') return;   // 연결 중엔 판정 보류
     const ev = evalWorker(w);
-    const gasKey = w.id+'::gas';
-    const respKey = w.id+'::resp';
+    const vs = vitalStatus(w);
+    const g  = gasCache.get(w.id) || simGas(w);
+    const gasWarn = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)].includes('warn');
+    const loc = mhLabel(w);
+    const gasKey=w.id+'::gas', respKey=w.id+'::resp', vitalKey=w.id+'::vital', warnKey=w.id+'::warn', radioKey=w.id+'::radio';
+
+    // ── 위험(danger) 이력 ──
     if(ev.level==='danger' && ev.note==='가스 임계치 초과'){
-      if(!alarmedSet.has(gasKey)){ alarmedSet.add(gasKey); addAlarm('danger','가스 임계치 초과 경보',`${w.name} · ${w.location||''}`); flashToast(`${w.name} 가스 위험!`); }
+      if(!alarmedSet.has(gasKey)){ alarmedSet.add(gasKey); addAlarm('danger','가스 임계치 초과 · 연락+구조',`${w.name} · ${loc}`); flashToast(`${w.name} 가스 위험 — 연락·구조!`); }
     } else alarmedSet.delete(gasKey);
 
-    if(ev.level==='danger' && ev.note==='안전확인 미응답'){
-      if(!alarmedSet.has(respKey)){ alarmedSet.add(respKey); addAlarm('danger','안전확인 미응답 경보',`${w.name} · ${w.location||''}`); flashToast(`${w.name} 안전확인 미응답!`); }
-    } else if(ev.level!=='danger') alarmedSet.delete(respKey);
+    // 안전확인 무응답 + 무움직임 → 119 연락·구조
+    if(ev.noMove){
+      if(!alarmedSet.has(respKey)){ alarmedSet.add(respKey); addAlarm('danger','안전확인 무응답·무움직임 · 119 연락',`${w.name} · ${loc}`); flashToast(`${w.name} 무응답·무움직임 — 119!`); }
+    } else alarmedSet.delete(respKey);
 
-    const vitalKey = w.id+'::vital';
-    const vs = vitalStatus(w);
     if(vs.level==='danger'){
-      if(!alarmedSet.has(vitalKey)){ alarmedSet.add(vitalKey); addAlarm('danger','생체신호 위험 경보',`${w.name} · ${vs.note}`); flashToast(`${w.name} 생체신호 위험!`); }
+      if(!alarmedSet.has(vitalKey)){ alarmedSet.add(vitalKey); addAlarm('danger','생체신호 위험 · 구조',`${w.name} · ${vs.note}`); flashToast(`${w.name} 생체신호 위험!`); }
     } else alarmedSet.delete(vitalKey);
+
+    // ── 구조·119 알림: 가스/생체 위험, 그리고 '무응답+무움직임'은 모두 자동 발령 ──
+    const autoRescue = ev.level==='danger';
+    if(autoRescue){
+      if(!rescueSet.has(w.id)){ rescueSet.add(w.id); triggerRescue(w, ev.note); }
+    } else rescueSet.delete(w.id);
+
+    // ── 무전 확인 단계: 안전확인이 유예를 넘기면 관제가 '자동 무전 호출' 1회 ──
+    if(ev.radioCall){
+      if(!warnedSet.has(radioKey)){
+        warnedSet.add(radioKey);
+        addComm(w.id, 'out', '[자동] 안전확인 응답 요청 — 위치·상태 보고 바랍니다');
+        addAlarm('warn', '안전확인 무응답 · 무전 호출', `${w.name} · ${loc}`);
+        flashToast(`${w.name} 안전확인 무응답 — 무전 호출`, 'warn');
+      }
+    } else warnedSet.delete(radioKey);
+
+    // ── 주의(warn) → 퇴장 권고 (무전에도 무응답 지속 / 생체 / 가스) ──
+    const recommendExit = ev.exitUrge || (ev.level==='warn' && (vs.level==='warn' || gasWarn));
+    if(recommendExit){
+      if(!warnedSet.has(warnKey)){
+        warnedSet.add(warnKey);
+        const why = ev.exitUrge ? '안전확인 무응답 지속' : (vs.level==='warn' ? ('생체 주의 · '+vs.note) : '가스 농도 주의');
+        addAlarm('warn', '퇴장 권고 — '+why, `${w.name} · ${loc}`);
+        flashToast(`${w.name} 퇴장 권고: ${why}`, 'warn');
+      }
+    } else warnedSet.delete(warnKey);
   });
 }
+
+/* 구조 알림 — 119 연계 + 지시자 대응 절차 오버레이 */
+let rescueTargetId = null;
+const RESCUE_STEPS = [
+  '무전으로 작업자 의식·상태를 즉시 확인',
+  '119 신고 — 위치·맨홀·심도·상황·가스 수치 전달',
+  '단독 진입 금지 — 2차 재해 방지 (전문 구조대 대기)',
+  '송풍기 최대 가동 · 지속 환기 유지',
+  '주변 작업자 즉시 대피 유도',
+  '구조대 도착 시 현장 정보·경보 이력 인계',
+];
+function triggerRescue(w, reason){
+  addAlarm('danger', '구조 알림 발령 · 119 연계', `${w.name} · ${mhLabel(w)} · ${reason}`);
+  showRescue(w, reason);
+}
+function showRescue(w, reason){
+  rescueTargetId = w.id;
+  const g  = gasCache.get(w.id) || simGas(w);
+  const vr = readVitals(w);
+  const mh = MH_BY_ID[w.mh];
+  const depth = curDepthOf(w.id, mh?mh.depth:0).toFixed(1);
+  const elapsed = w.enteredAt ? fmtDurKo((now()-w.enteredAt)/1000) : '-';
+  $('#rescue-sub').textContent = `${w.name} · ${mhLabel(w)} · ${reason}`;
+  const relay = [
+    ['위치',     `${mhLabel(w)} · 심도 ${depth} m`],
+    ['상황',     reason],
+    ['가스',     `O₂ ${g.o2.toFixed(1)} · H₂S ${g.h2s.toFixed(0)} · CO ${g.co.toFixed(0)} · LEL ${g.lel.toFixed(0)}`],
+    ['생체',     `심박 ${vr.bpm} · SpO₂ ${vr.spo2}% · 체온 ${vr.temp}°`],
+    ['작업 경과', elapsed],
+    ['연락처',   w.phone || '미등록'],
+  ];
+  $('#rescue-relay-list').innerHTML = relay.map(([k,v])=>`<li><span class="rl-k">${k}</span><span class="rl-v">${escapeHtml(v)}</span></li>`).join('');
+  $('#rescue-steps-list').innerHTML = RESCUE_STEPS.map(s=>`<li>${escapeHtml(s)}</li>`).join('');
+  $('#rescue-overlay').hidden = false;
+  if(navigator.vibrate) navigator.vibrate([400,150,400,150,400]);
+}
+function closeRescue(){ $('#rescue-overlay').hidden = true; rescueTargetId = null; }
+
 let lastFlash = 0;
-function flashToast(msg){
+function flashToast(msg, kind){
   const t = now();
   if(t-lastFlash < 4000) return;   // 과도한 반복 방지
-  lastFlash = t; toast(msg,'danger');
+  lastFlash = t; toast(msg, kind||'danger');
+}
+
+/* ---------- 무전 (지시 전달/수신) ---------- */
+const RADIO_PRESETS = ['현재 위치·상태 보고','가스 재측정 요청','작업 중지·대기','즉시 퇴장 지시'];
+let radioTargetId = null;
+function addComm(workerId, dir, text){
+  state.comms.push({ id:uid(), ts:now(), workerId, dir, text });
+  if(state.comms.length>800) state.comms = state.comms.slice(-800);
+  save();
+}
+function openRadio(id){
+  const w = state.workers.find(x=>x.id===id); if(!w) return;
+  radioTargetId = id;
+  $('#radio-title').textContent = `${w.name} · ${mhLabel(w)||'-'}`;
+  $('#radio-presets').innerHTML = RADIO_PRESETS.map(p=>`<button class="radio-preset" data-preset="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join('');
+  $('#radio-text').value = '';
+  renderRadioLog();
+  $('#radio-modal').hidden = false;
+  setTimeout(()=>$('#radio-text').focus(), 60);
+}
+function closeRadio(){ $('#radio-modal').hidden = true; radioTargetId = null; }
+function renderRadioLog(){
+  const rows = state.comms.filter(c=>c.workerId===radioTargetId).sort((a,b)=>a.ts-b.ts);
+  $('#radio-empty').hidden = rows.length>0;
+  $('#radio-log').innerHTML = rows.map(c=>`
+    <div class="rmsg rmsg--${c.dir}">
+      <div class="rmsg__b">${escapeHtml(c.text)}</div>
+      <div class="rmsg__t">${c.dir==='out'?'관제 → 작업자':'작업자 → 관제'} · ${fmtHM(c.ts)}</div>
+    </div>`).join('');
+  const log = $('#radio-log'); if(log) log.scrollTop = log.scrollHeight;
+}
+function sendComm(text){
+  const t = (text||'').trim(); if(!t || !radioTargetId) return;
+  const id = radioTargetId;
+  addComm(id, 'out', t);
+  $('#radio-text').value=''; renderRadioLog();
+  toast(`무전 전송: ${t}`, 'ok');
+  const ack = ackFor(t);
+  setTimeout(()=>{
+    const cur = state.workers.find(x=>x.id===id);
+    if(!cur || !cur.inside) return;
+    addComm(id, 'in', ack);
+    // 무전 응답 = 생존·상태 확인 → 안전확인 갱신(미응답 해제, 정상 상태)
+    cur.lastResponseAt = now();
+    alarmedSet.delete(id+'::resp');
+    save();
+    if(radioTargetId===id && !$('#radio-modal').hidden) renderRadioLog();
+    else toast(`${cur.name} 무전 응답: ${ack}`, 'ok');
+    if(currentView==='dashboard') renderDashboard(true);
+  }, 1800 + Math.floor(Math.random()*1600));
+}
+function ackFor(text){
+  if(/퇴장/.test(text)) return '수신, 즉시 퇴장 이동 중';
+  if(/위치|보고/.test(text)) return '수신, 현재 위치 이상 없음';
+  if(/가스|재측정/.test(text)) return '수신, 가스 재측정 실시';
+  if(/중지|대기/.test(text)) return '수신, 작업 중지·대기';
+  return '수신 완료, 이상 없음';
 }
 
 /* ============================ 6. 루프 & 이벤트 ============================ */
 function refreshAll(){
   renderInsideCounts();
   if(currentView==='dashboard') renderDashboard(true);
-  else if(currentView==='workers') renderWorkers();
+  else if(currentView==='prep') renderPrep();
 }
 
 function tick(){
   $('#topbar-clock').textContent = fmtClock(now());
+  promoteConnections();
   autoDetectAlarms();
+  updateStatStrip();
   if(currentView==='dashboard') renderDashboard(false);
-  else if(currentView==='workers'){
-    // 내부 인원 경과시간 갱신(가벼운 재렌더)
-    renderWorkers();
+  else if(currentView==='prep'){
+    // 내부 인원 경과시간·입장 잠금 갱신(가벼운 재렌더)
+    renderWorkerList();
   }
 }
 
@@ -912,15 +1177,28 @@ function toast(msg, kind){
 let editingId=null;
 function openModal(id){
   editingId = id||null;
+  fillManholeOptions();
   $('#worker-modal-title').textContent = id? '작업자 수정' : '작업자 등록';
   const w = id? state.workers.find(x=>x.id===id) : null;
   $('#wf-name').value     = w? w.name : '';
+  $('#wf-mh').value       = w? (w.assignedMh||'') : '';
   $('#wf-location').value = w? (w.location||'') : '';
   $('#wf-phone').value    = w? (w.phone||'') : '';
   $('#worker-modal').hidden = false;
   setTimeout(()=>$('#wf-name').focus(), 60);
 }
 function closeModal(){ $('#worker-modal').hidden = true; editingId=null; }
+
+/* 맨홀 select 옵션 — 이미 작업 중인 맨홀은 비활성 */
+function fillManholeOptions(){
+  const sel = $('#wf-mh'); if(!sel) return;
+  const editing = editingId ? state.workers.find(x=>x.id===editingId) : null;
+  const occupied = new Set(insideWorkers().filter(w=>!editing || w.id!==editing.id).map(w=>w.mh));
+  sel.innerHTML = '<option value="">맨홀 선택…</option>' + MANHOLES.map(m=>{
+    const busy = occupied.has(m.id);
+    return `<option value="${m.id}"${busy?' disabled':''}>${m.label} · 심도 ${m.depth}m${busy?' · 작업 중':''}</option>`;
+  }).join('');
+}
 
 /* ---------- 이벤트 바인딩 ---------- */
 function bindEvents(){
@@ -930,9 +1208,10 @@ function bindEvents(){
     switchView(tab.dataset.view);
   });
 
-  // SOS
+  // SOS · 설정(상단 ⚙)
   $('#sos-btn').addEventListener('click', triggerSOS);
-  $('#alarm-overlay-close').addEventListener('click', closeAlarmOverlay);
+  $('#sos-clear').addEventListener('click', clearSOS);
+  $('#settings-btn').addEventListener('click', ()=>switchView(currentView==='settings'?'dashboard':'settings'));
 
   // 위임: 작업자/대시보드 액션
   $('#app').addEventListener('click', e=>{
@@ -942,8 +1221,7 @@ function bindEvents(){
     if(btn){
       const {act,id}=btn.dataset;
       if(act==='enter')  enterWorker(id);
-      if(act==='exit')   exitWorker(id);
-      if(act==='respond')respondWorker(id);
+      if(act==='return') requestReturn(id);
       if(act==='edit')   openModal(id);
       if(act==='delete') deleteWorker(id);
       return;
@@ -954,7 +1232,7 @@ function bindEvents(){
       const k = ci.dataset.check;
       state.checklist[k] = !state.checklist[k];
       ci.classList.toggle('is-done', state.checklist[k]);
-      save(); updateChecklistFooter();
+      save(); updatePrepGate();
     }
     // 기록 서브탭
     const rt = e.target.closest('.record-tab');
@@ -963,8 +1241,30 @@ function bindEvents(){
 
   // 대시보드 상세 팝오버
   $('#sd-close').addEventListener('click', closeDetail);
-  $('#sd-respond').addEventListener('click', ()=>{ if(selectedId){ respondWorker(selectedId); syncDetail(); } });
-  $('#sd-exit').addEventListener('click', ()=>{ if(selectedId){ exitWorker(selectedId); closeDetail(); } });
+  $('#sd-exit').addEventListener('click', ()=>{ if(selectedId){ requestReturn(selectedId); syncDetail(); } });
+  $('#sd-radio').addEventListener('click', ()=>{ if(selectedId) openRadio(selectedId); });
+  $('#sd-rescue').addEventListener('click', ()=>{
+    if(!selectedId) return;
+    const w = state.workers.find(x=>x.id===selectedId); if(!w) return;
+    const ev = evalWorker(w);
+    showRescue(w, ev.level==='ok' ? '수동 구조 요청' : ev.note);
+  });
+
+  // 무전 모달
+  $('#radio-send').addEventListener('click', ()=>sendComm($('#radio-text').value));
+  $('#radio-text').addEventListener('keydown', e=>{ if(e.key==='Enter') sendComm($('#radio-text').value); });
+  $('#radio-presets').addEventListener('click', e=>{ const b=e.target.closest('[data-preset]'); if(b) sendComm(b.dataset.preset); });
+  $$('[data-close-radio]').forEach(el=>el.addEventListener('click', closeRadio));
+
+  // 구조 알림 오버레이 (119 연계)
+  $('#rescue-close').addEventListener('click', closeRescue);
+  $('#rescue-radio').addEventListener('click', ()=>{ if(rescueTargetId){ const id=rescueTargetId; closeRescue(); openRadio(id); } });
+  $('#rescue-call').addEventListener('click', ()=>{
+    if(!rescueTargetId) return;
+    const w = state.workers.find(x=>x.id===rescueTargetId);
+    addAlarm('danger', '119 신고 전화 발신', `${w?w.name:''} · ${w?mhLabel(w):''}`);
+    toast('119 신고 전화 연결', 'danger');
+  });
   // 경보등급 필터 / 패널 접기
   $('#al-grade').addEventListener('change', e=>{ alertGrade=e.target.value; lastAlarmSig=''; renderAlertPanel(); });
   $('#al-collapse').addEventListener('click', ()=>$('#panel-alerts').classList.toggle('is-collapsed'));
@@ -973,9 +1273,6 @@ function bindEvents(){
   $('#add-worker-btn').addEventListener('click', ()=>openModal(null));
   $('#wf-save').addEventListener('click', saveWorkerFromModal);
   $$('[data-close-modal]').forEach(el=>el.addEventListener('click', closeModal));
-
-  // 체크리스트 시작
-  $('#start-work-btn').addEventListener('click', startWork);
 
   // 기록 날짜
   $('#record-date').addEventListener('change', renderJournal);
