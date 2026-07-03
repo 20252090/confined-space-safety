@@ -288,15 +288,41 @@ function buildSewer(){
   $('#stage-nodes').innerHTML = html;
 }
 
-/* 작업자 → 맨홀 배정 (id 정렬 기준으로 안정적, 초과 시 약간 오프셋) */
+/* 작업자 → 맨홀 배정 (입장 시 정한 맨홀 w.mh 유지 → 안정적) */
 function assignManholes(list){
   workerMH = new Map();
-  const sorted=[...list].sort((a,b)=> a.id<b.id?-1:a.id>b.id?1:0);
-  sorted.forEach((w,i)=>{
-    const base=MH_BY_ID[WORKER_SLOTS[i%WORKER_SLOTS.length]];
-    const k=Math.floor(i/WORKER_SLOTS.length);
-    workerMH.set(w.id, k ? {...base, x:base.x+3*k, depth:Math.min(DEPTH_MAX, base.depth+0.4*k)} : base);
-  });
+  const used = new Set();
+  list.forEach(w=>{ if(w.mh && MH_BY_ID[w.mh] && !used.has(w.mh)){ used.add(w.mh); workerMH.set(w.id, MH_BY_ID[w.mh]); } });
+  list.forEach(w=>{ if(!workerMH.has(w.id)){
+    const slot = WORKER_SLOTS.find(s=>!used.has(s)) || WORKER_SLOTS[used.size % WORKER_SLOTS.length];
+    used.add(slot); w.mh = slot; workerMH.set(w.id, MH_BY_ID[slot]);
+  }});
+}
+function freeSlot(){
+  const used = new Set(insideWorkers().map(w=>w.mh).filter(Boolean));
+  return WORKER_SLOTS.find(s=>!used.has(s)) || WORKER_SLOTS[used.size % WORKER_SLOTS.length];
+}
+
+/* 작업자 실시간 위치/이동 상태 (입구 하강 + 무작위 이동/정지) */
+const wpos = new Map();                 // id -> {x,y,cx,cy,tx,ty,st,until}
+const DESCEND_SPEED = 6;                // 하강 속도(%/s)
+const MOVE_SPEED    = 3.2;              // 이동 속도(%/s)
+const WANDER_X = 4, WANDER_Y = 2;       // 작업 반경(%)
+const rnd = (a,b)=> a + Math.random()*(b-a);
+
+function ensureWpos(id, mh){
+  let p = wpos.get(id);
+  if(!p){ const cy = depthY(mh.depth)-TUBE/2; p = { x:mh.x, y:cy, cx:mh.x, cy, tx:mh.x, ty:cy, st:'pause', until:0 }; wpos.set(id, p); }
+  return p;
+}
+/* 입장: 입구(지표면)에서 작업 심도까지 하강 시작 */
+function startDescent(id, mh){
+  const cy = depthY(mh.depth)-TUBE/2;
+  wpos.set(id, { x:mh.x, y:SURF+1, cx:mh.x, cy, tx:mh.x, ty:cy, st:'descend', until:0 });
+}
+function curDepthOf(id, fallback){
+  const p = wpos.get(id);
+  return p ? Math.max(0, (p.y-SURF)/SCALE) : fallback;
 }
 
 /* structure=true 면 마커 DOM 재생성, 아니면 값만 갱신 */
@@ -311,7 +337,7 @@ function renderDashboard(structure){
     const el = $(`#mk-${w.id}`); if(!el) return;
     el.className = `mk is-${ev.level}`;
     const mh = workerMH.get(w.id);
-    $('.mk__meta',el).textContent = `${mh?mh.label:''} · 심도 ${mh?mh.depth.toFixed(1):'-'}m · ${fmtDur((now()-w.enteredAt)/1000)}`;
+    $('.mk__meta',el).textContent = `${mh?mh.label:''} · 심도 ${curDepthOf(w.id, mh?mh.depth:0).toFixed(1)}m · ${fmtDur((now()-w.enteredAt)/1000)}`;
     $('.mk__gas',el).textContent  = `O₂ ${g.o2.toFixed(1)} · H₂S ${g.h2s.toFixed(0)} · CO ${g.co.toFixed(0)}`;
     const nt = $('.mk__note',el); nt.textContent = ev.note; nt.className = 'mk__note is-'+ev.level;
   });
@@ -330,7 +356,8 @@ function buildMarkers(list){
   $$('#stage-nodes .mh-il').forEach(n=>n.classList.toggle('is-occupied', occ.has(n.dataset.mh)));
   wrap.innerHTML = list.map(w=>{
     const m = workerMH.get(w.id);
-    return `<button class="mk is-ok" id="mk-${w.id}" data-mk="${w.id}" style="left:${m.x}%;top:${depthY(m.depth)-TUBE/2}%">
+    const p = ensureWpos(w.id, m);
+    return `<button class="mk is-ok" id="mk-${w.id}" data-mk="${w.id}" style="left:${p.x}%;top:${p.y}%">
       <span class="mk__pin"><span class="mk__ring"></span><span class="mk__ico"></span></span>
       <span class="mk__label">
         <span class="mk__name">${escapeHtml(w.name)}</span>
@@ -402,28 +429,60 @@ function closeDetail(){
   const l=$('#ar-link'); if(l) l.hidden=true;
 }
 
-/* AR 카드를 마커의 대각선 위쪽에 배치 + 연결선 */
+/* AR 카드를 마커(현재 위치)의 대각선 위쪽에 배치 */
 function positionAR(){
-  const m=workerMH.get(selectedId); if(!m) return;
+  const p=wpos.get(selectedId); if(!p) return;
   const S=$('.stage').getBoundingClientRect();
   const el=$('#stage-detail');
   const cw=el.offsetWidth, ch=el.offsetHeight, gap=14;
-  const mx=S.width  * m.x/100;                          // 마커 X (스테이지 px)
-  const my=S.height * (depthY(m.depth)-TUBE/2)/100;     // 마커 Y (스테이지 px)
-  // 기본: 대각선 위쪽 오른쪽 → 넘치면 왼쪽/아래로 뒤집기
+  const mx=S.width*p.x/100, my=S.height*p.y/100;
   let left=mx+gap, top=my-ch-gap;
   if(left+cw > S.width-8)  left=mx-cw-gap;
   if(left<8) left=8;
   if(top<8) top=my+gap;
   if(top+ch > S.height-8) top=S.height-8-ch;
   el.style.left=left+'px'; el.style.top=top+'px';
-  // 연결선(카드에서 마커에 가장 가까운 모서리 → 마커 점)
-  const ax=Math.max(left+8, Math.min(left+cw-8, mx));
-  const ay=(my>=top+ch)?top+ch : (my<=top?top:my);
+  updateARLink();
+}
+/* 마커 ↔ 카드 연결선 갱신(이동 추종) */
+function updateARLink(){
+  const p=wpos.get(selectedId); if(!p) return;
+  const S=$('.stage').getBoundingClientRect();
+  const el=$('#stage-detail');
+  const cl=el.offsetLeft, ct=el.offsetTop, cw=el.offsetWidth, ch=el.offsetHeight;
+  const mx=S.width*p.x/100, my=S.height*p.y/100;
+  const ax=Math.max(cl+8, Math.min(cl+cw-8, mx));
+  const ay=(my>=ct+ch)?ct+ch : (my<=ct?ct:my);
   const ln=$('#ar-link-l'), dot=$('#ar-link-d');
   ln.setAttribute('x1',mx); ln.setAttribute('y1',my); ln.setAttribute('x2',ax); ln.setAttribute('y2',ay);
   dot.setAttribute('cx',mx); dot.setAttribute('cy',my);
   $('#ar-link').hidden=false;
+}
+
+/* 위치 애니메이션 루프: 입구 하강 → 무작위 이동/정지(작업) */
+let _lastFrame=null;
+function animateWorkers(t){
+  requestAnimationFrame(animateWorkers);
+  if(_lastFrame==null){ _lastFrame=t; return; }
+  const dt=Math.min(0.05,(t-_lastFrame)/1000); _lastFrame=t;
+  if(currentView!=='dashboard') return;
+  insideWorkers().forEach(w=>{
+    const p=wpos.get(w.id); if(!p) return;
+    if(p.st==='descend'){
+      p.x=p.cx;
+      p.y=Math.min(p.cy, p.y + DESCEND_SPEED*dt);
+      if(p.y>=p.cy-0.15){ p.y=p.cy; p.st='pause'; p.until=t+rnd(1500,3500); }
+    } else if(p.st==='pause'){
+      if(t>=p.until){ p.tx=p.cx+rnd(-WANDER_X,WANDER_X); p.ty=p.cy+rnd(-WANDER_Y,WANDER_Y); p.st='move'; }
+    } else {
+      const dx=p.tx-p.x, dy=p.ty-p.y, d=Math.hypot(dx,dy), step=MOVE_SPEED*dt;
+      if(d<=step){ p.x=p.tx; p.y=p.ty; p.st='pause'; p.until=t+rnd(2000,5000); }
+      else { p.x+=dx/d*step; p.y+=dy/d*step; }
+    }
+    const el=document.getElementById('mk-'+w.id);
+    if(el){ el.style.left=p.x+'%'; el.style.top=p.y+'%'; }
+  });
+  if(selectedId && !$('#stage-detail').hidden) updateARLink();
 }
 function syncDetail(){
   const w = state.workers.find(x=>x.id===selectedId);
@@ -456,7 +515,7 @@ function syncDetail(){
 
   // 바이탈
   $('#ar-bpm').textContent    = simVitals(w, ev.level).bpm;
-  $('#ar-depthv').textContent = mh ? mh.depth.toFixed(1) : '-';
+  $('#ar-depthv').textContent = curDepthOf(selectedId, mh?mh.depth:0).toFixed(1);
 
   // 경고
   const warn = $('#ar-warn');
@@ -589,6 +648,8 @@ function enterWorker(id){
   w.enteredAt = now();
   w.lastResponseAt = now();
   w.logId = uid();
+  w.mh = freeSlot();                       // 맨홀 배정
+  startDescent(w.id, MH_BY_ID[w.mh]);      // 입구(지표면)에서 하강 시작
   state.logs.push({ id:w.logId, name:w.name, location:w.location, enteredAt:w.enteredAt, exitedAt:null, durationSec:0, checklistPassed:true });
   gasCache.delete(w.id);
   save();
@@ -603,8 +664,8 @@ function exitWorker(id){
   const log = state.logs.find(l=>l.id===w.logId);
   if(log){ log.exitedAt = exitedAt; log.durationSec = Math.floor((exitedAt-log.enteredAt)/1000); }
   toast(`${w.name} 퇴장 · 작업 ${fmtDurKo((exitedAt-w.enteredAt)/1000)}`, 'ok');
-  w.enteredAt = null; w.logId = null;
-  gasCache.delete(w.id); vitalsCache.delete(w.id);
+  w.enteredAt = null; w.logId = null; w.mh = null;
+  gasCache.delete(w.id); vitalsCache.delete(w.id); wpos.delete(w.id);
   save();
   refreshAll();
 }
@@ -640,7 +701,7 @@ function deleteWorker(id){
   if(w.inside){ toast('내부 작업 중인 작업자는 삭제할 수 없습니다. 먼저 퇴장 처리하세요.','danger'); return; }
   if(!confirm(`'${w.name}' 작업자를 삭제하시겠습니까?`)) return;
   state.workers = state.workers.filter(x=>x.id!==id);
-  gasCache.delete(id);
+  gasCache.delete(id); vitalsCache.delete(id); wpos.delete(id);
   save();
   renderWorkers();
 }
@@ -843,5 +904,6 @@ function boot(){
   switchView('dashboard');
   tick();
   setInterval(tick, 1000);
+  requestAnimationFrame(animateWorkers);   // 작업자 이동 애니메이션
 }
 document.addEventListener('DOMContentLoaded', boot);
