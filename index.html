@@ -476,18 +476,22 @@
     </div><!-- /.screen -->
   </div><!-- /.device -->
 
-  <!-- 스플래시 부팅 문구 (앱 실행 연출) -->
+  <!-- 스플래시 부팅 문구 + 확실한 종료(애니메이션이 멈춰도 JS로 닫아 클릭 차단 방지) -->
   <script>
     (function(){
+      var splash = document.getElementById('splash');
       var foot = document.getElementById('splash-foot');
-      if(!foot) return;
-      var msgs = ['시스템 초기화 중…','센서·통신 점검 중…','관제 화면 준비 완료'];
-      var i = 0;
-      var timer = setInterval(function(){
-        i++;
-        if(i < msgs.length){ foot.textContent = msgs[i]; }
-        else { clearInterval(timer); }
-      }, 750);
+      if(foot){
+        var msgs = ['시스템 초기화 중…','센서·통신 점검 중…','관제 화면 준비 완료'];
+        var i = 0;
+        var timer = setInterval(function(){
+          i++;
+          if(i < msgs.length){ foot.textContent = msgs[i]; }
+          else { clearInterval(timer); }
+        }, 750);
+      }
+      // 부팅 연출 후 스플래시를 JS로 강제 종료 → 화면을 덮어 클릭을 막지 않도록
+      setTimeout(function(){ if(splash) splash.classList.add('is-done'); }, 2600);
     })();
   </script>
 

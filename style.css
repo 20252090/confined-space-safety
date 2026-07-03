@@ -132,12 +132,12 @@ body::before{
 
 /* ===================== 스플래시(부팅) 화면 ===================== */
 .splash{
-  position:absolute; inset:0; z-index:120;
+  position:absolute; inset:0; z-index:120; pointer-events:none;  /* 클릭 통과 — 앱을 절대 막지 않음 */
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
   background:radial-gradient(120% 90% at 50% 34%, #12233a 0%, var(--bg) 58%, #05070a 100%);
   animation:splashOut .5s ease 2.2s forwards;
 }
-.splash.is-done{ animation:none; opacity:0; visibility:hidden; }
+.splash.is-done{ animation:none; opacity:0; visibility:hidden; pointer-events:none; }
 @keyframes splashOut{ to{ opacity:0; visibility:hidden; } }
 .splash__mark{ font-size:60px; line-height:1; animation:splashPop .6s cubic-bezier(.2,.85,.25,1) both; }
 .splash__title{ font-size:26px; font-weight:900; letter-spacing:-.5px; color:var(--txt); }
