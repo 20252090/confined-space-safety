@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0d1117" />
+  <title>밀폐공간 안전관리</title>
+  <meta name="description" content="맨홀 등 밀폐공간 고위험 작업자 실시간 모니터링 관리자(감시인)용 앱" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ===================== 전체 경보 오버레이 ===================== -->
+  <div id="alarm-overlay" class="alarm-overlay" hidden>
+    <div class="alarm-overlay__inner">
+      <div class="alarm-overlay__title" id="alarm-overlay-title">전체 대피</div>
+      <div class="alarm-overlay__desc" id="alarm-overlay-desc">모든 작업자를 즉시 대피시키세요</div>
+      <button class="btn btn--xl btn--ghost" id="alarm-overlay-close">경보 해제</button>
+    </div>
+  </div>
+
+  <!-- ===================== 상단 고정 헤더 ===================== -->
+  <header class="topbar">
+    <div class="topbar__row">
+      <div class="topbar__brand">
+        <span class="topbar__title" id="view-title">실시간 대시보드</span>
+        <span class="topbar__clock" id="topbar-clock">--:--:--</span>
+      </div>
+      <button class="btn btn--sos" id="sos-btn">
+        <span class="btn--sos__main">SOS</span>
+        <span class="btn--sos__sub">전체 대피</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===================== 메인 콘텐츠 ===================== -->
+  <main id="app">
+
+    <!-- ---------- 대시보드 (관제 뷰) ---------- -->
+    <section class="view view--stage" id="view-dashboard">
+      <div class="stage">
+        <!-- 배경: 하수도 관로 도면 -->
+        <div class="stage__bg" aria-hidden="true">
+          <div class="stage__grid"></div>
+          <svg class="stage__svg" id="stage-pipes" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+          <div class="stage__nodes" id="stage-nodes"></div>
+          <div class="stage__legend-map">하수관로 내부 단면도 · 세로축 = 심도(m)</div>
+        </div>
+
+        <!-- 작업자 마커 -->
+        <div class="stage__markers" id="stage-markers"></div>
+        <div class="stage-empty" id="stage-empty">
+          현재 밀폐공간 내부에 있는 작업자가 없습니다.<br />
+          <span class="empty__hint">[작업자] 탭에서 입장 처리하세요.</span>
+        </div>
+
+        <!-- 좌상단: 현장 실시간 정보 -->
+        <div class="panel panel--env">
+          <div class="panel__head">
+            <span class="live-dot"></span>
+            <span class="panel__title">현장 실시간 감시</span>
+          </div>
+          <div class="env-inside"><span id="env-inside">0</span><small>명 내부</small></div>
+          <div class="env-status">
+            <span class="es es--ok">정상<b id="env-ok">0</b></span>
+            <span class="es es--warn">주의<b id="env-warn">0</b></span>
+            <span class="es es--danger">위험<b id="env-danger">0</b></span>
+          </div>
+          <div class="env-gases">
+            <div class="env-gas"><span class="env-gas__l">O₂</span><span class="env-gas__v" id="env-o2">--</span></div>
+            <div class="env-gas"><span class="env-gas__l">H₂S</span><span class="env-gas__v" id="env-h2s">--</span></div>
+            <div class="env-gas"><span class="env-gas__l">CO</span><span class="env-gas__v" id="env-co">--</span></div>
+            <div class="env-gas"><span class="env-gas__l">LEL</span><span class="env-gas__v" id="env-lel">--</span></div>
+          </div>
+          <div class="env-foot">현장 대표 가스 · 내부 평균(시뮬레이션)</div>
+        </div>
+
+        <!-- 우상단: 경고 -->
+        <div class="panel panel--alerts" id="panel-alerts">
+          <div class="panel__head panel__head--alerts">
+            <span class="panel__title">경고</span>
+            <button class="panel__collapse" id="al-collapse" aria-label="접기">›</button>
+          </div>
+          <div class="panel__body">
+            <div class="al-rail">
+              <div class="al-rail__item is-danger"><span class="al-dot is-danger"></span><b id="al-danger">0</b><small>위험</small></div>
+              <div class="al-rail__item is-warn"><span class="al-dot is-warn"></span><b id="al-warn">0</b><small>주의</small></div>
+              <div class="al-rail__item is-ok"><span class="al-dot is-ok"></span><b id="al-ok">0</b><small>정상</small></div>
+            </div>
+            <div class="al-filter">
+              <label>경보등급</label>
+              <select id="al-grade">
+                <option value="all">모두</option>
+                <option value="danger">위험</option>
+                <option value="warn">주의</option>
+              </select>
+            </div>
+            <div class="al-list" id="al-list"></div>
+            <div class="al-empty" id="al-empty">경보 이력이 없습니다.</div>
+          </div>
+        </div>
+
+        <!-- 좌하단: 범례 -->
+        <div class="panel panel--legend">
+          <div class="lg"><span class="al-dot is-ok"></span>정상</div>
+          <div class="lg"><span class="al-dot is-warn"></span>주의</div>
+          <div class="lg"><span class="al-dot is-danger"></span>위험</div>
+          <div class="lg lg--hint">마커를 누르면 상세 · 응답/퇴장</div>
+        </div>
+
+        <!-- 작업자 선택 시: AR 글라스 카메라 뷰 -->
+        <div class="ar-view" id="stage-detail" hidden>
+          <div class="ar-cam" id="ar-cam">
+            <!-- 맨홀 내부 1인칭 POV (시뮬레이션) -->
+            <svg class="ar-pov" viewBox="0 0 560 350" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <radialGradient id="arlight" cx="50%" cy="45%" r="62%">
+                  <stop offset="0%" stop-color="#1c3a52"/>
+                  <stop offset="58%" stop-color="#0a1622"/>
+                  <stop offset="100%" stop-color="#04090f"/>
+                </radialGradient>
+              </defs>
+              <rect width="560" height="350" fill="url(#arlight)"/>
+              <!-- 관로 원근 링 -->
+              <g fill="none" stroke="#2b4c66" stroke-opacity=".5">
+                <rect x="30"  y="26"  width="500" height="298" rx="130"/>
+                <rect x="92"  y="58"  width="376" height="234" rx="102"/>
+                <rect x="148" y="88"  width="264" height="174" rx="76"/>
+                <rect x="196" y="114" width="168" height="122" rx="54"/>
+                <rect x="232" y="136" width="96"  height="78"  rx="34"/>
+              </g>
+              <!-- 바닥 물 -->
+              <path d="M30,258 Q280,304 530,258 L530,350 L30,350 Z" fill="#10406a" fill-opacity=".3"/>
+              <path d="M30,258 Q280,304 530,258" fill="none" stroke="#3f8fc0" stroke-opacity=".4" stroke-width="2"/>
+              <!-- 중앙 광원 -->
+              <ellipse cx="280" cy="172" rx="44" ry="30" fill="#20476a" fill-opacity=".55"/>
+              <ellipse cx="280" cy="172" rx="16" ry="11" fill="#5fa3d6" fill-opacity=".5"/>
+              <!-- 전경 좌측 사다리 -->
+              <g stroke="#3a5f7a" stroke-width="4" stroke-opacity=".5" stroke-linecap="round">
+                <line x1="52" y1="128" x2="104" y2="128"/>
+                <line x1="44" y1="188" x2="100" y2="188"/>
+                <line x1="36" y1="252" x2="96"  y2="252"/>
+              </g>
+            </svg>
+            <div class="ar-scan"></div>
+            <div class="ar-vignette"></div>
+
+            <!-- 상단 오버레이 바 -->
+            <div class="ar-hd">
+              <span class="rec"></span>
+              <b id="sd-name">-</b>
+              <span class="ar-hd__loc" id="sd-loc"></span>
+              <span class="ar-hd__o2"><i id="ar-o2-dot"></i>O₂ <b id="ar-o2">--</b></span>
+              <span class="ar-chip" id="ar-status">정상</span>
+              <button class="sd__close" id="sd-close" aria-label="닫기">✕</button>
+            </div>
+            <div class="ar-warn" id="ar-warn" hidden></div>
+
+            <!-- 중앙 조준선 -->
+            <div class="ar-reticle"></div>
+
+            <!-- 하단 데이터 스트립 -->
+            <div class="ar-strip">
+              <span id="ar-h2s-w">H₂S <b id="ar-h2s">-</b></span>
+              <span id="ar-co-w">CO <b id="ar-co">-</b></span>
+              <span id="ar-lel-w">LEL <b id="ar-lel">-</b></span>
+              <span class="ar-strip__v">심박 <b id="ar-bpm">--</b></span>
+              <span class="ar-strip__v">심도 <b id="ar-depthv">--</b>m</span>
+            </div>
+          </div>
+
+          <!-- 액션 -->
+          <div class="ar-actions">
+            <button class="btn btn--sm btn--respond" id="sd-respond" hidden>안전확인 응답</button>
+            <button class="btn btn--sm btn--exit" id="sd-exit">퇴장</button>
+          </div>
+        </div>
+
+        <!-- 마커 ↔ AR 카메라 연결선 -->
+        <svg class="ar-link" id="ar-link" hidden><line id="ar-link-l"/><circle id="ar-link-d" r="3"/></svg>
+      </div>
+    </section>
+
+    <!-- ---------- 작업자 관리 ---------- -->
+    <section class="view" id="view-workers" hidden>
+      <div class="inside-banner inside-banner--mini">
+        <div class="inside-banner__count"><span id="inside-count-2">0</span><small>명 내부</small></div>
+        <button class="btn btn--primary" id="add-worker-btn">＋ 작업자 등록</button>
+      </div>
+      <div class="worker-list" id="worker-list"></div>
+      <div class="empty" id="workers-empty">
+        등록된 작업자가 없습니다.<br />
+        <span class="empty__hint">＋ 작업자 등록 버튼으로 추가하세요.</span>
+      </div>
+    </section>
+
+    <!-- ---------- 작업 전 체크리스트 ---------- -->
+    <section class="view" id="view-checklist" hidden>
+      <p class="view-lead">작업 시작 전 아래 항목을 모두 확인하세요. 모두 완료해야 작업을 시작할 수 있습니다.</p>
+      <div class="checklist" id="checklist"></div>
+      <div class="checklist-footer">
+        <div class="checklist-progress" id="checklist-progress">0 / 6 완료</div>
+        <button class="btn btn--xl btn--start" id="start-work-btn" disabled>작업 시작</button>
+      </div>
+    </section>
+
+    <!-- ---------- 기록 ---------- -->
+    <section class="view" id="view-records" hidden>
+      <div class="record-tabs">
+        <button class="record-tab is-active" data-rtab="journal">작업 일지</button>
+        <button class="record-tab" data-rtab="alarms">경보 이력</button>
+      </div>
+
+      <div class="record-panel" id="rpanel-journal">
+        <label class="date-field">
+          <span>날짜</span>
+          <input type="date" id="record-date" />
+        </label>
+        <div class="journal-list" id="journal-list"></div>
+        <div class="empty" id="journal-empty">해당 날짜의 작업 기록이 없습니다.</div>
+      </div>
+
+      <div class="record-panel" id="rpanel-alarms" hidden>
+        <div class="alarm-list" id="alarm-list"></div>
+        <div class="empty" id="alarm-empty">경보 발생 이력이 없습니다.</div>
+      </div>
+    </section>
+
+    <!-- ---------- 설정 ---------- -->
+    <section class="view" id="view-settings" hidden>
+      <div class="settings-group">
+        <h3 class="settings-group__title">안전 확인</h3>
+        <label class="field">
+          <span class="field__label">안전 확인 주기 (분)</span>
+          <input type="number" id="set-interval" min="1" max="60" step="1" />
+        </label>
+        <label class="field">
+          <span class="field__label">미응답 유예 시간 (초)</span>
+          <input type="number" id="set-grace" min="10" max="600" step="10" />
+        </label>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group__title">가스 임계치</h3>
+        <div class="thresh-grid">
+          <label class="field field--sm"><span class="field__label">O₂ 하한 (%)</span><input type="number" id="th-o2low" step="0.1" /></label>
+          <label class="field field--sm"><span class="field__label">O₂ 상한 (%)</span><input type="number" id="th-o2high" step="0.1" /></label>
+          <label class="field field--sm"><span class="field__label">H₂S (ppm)</span><input type="number" id="th-h2s" step="1" /></label>
+          <label class="field field--sm"><span class="field__label">CO (ppm)</span><input type="number" id="th-co" step="1" /></label>
+          <label class="field field--sm"><span class="field__label">LEL (%)</span><input type="number" id="th-lel" step="1" /></label>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group__title">가스 시뮬레이션</h3>
+        <label class="field">
+          <span class="field__label">모드</span>
+          <select id="set-gasmode">
+            <option value="normal">정상 (안전 범위 내 변동)</option>
+            <option value="alarm">경보 테스트 (임계치 초과)</option>
+          </select>
+        </label>
+        <p class="field__hint">실제 센서 연동 전 데모용입니다. '경보 테스트'는 내부 작업자 카드를 위험 상태로 만듭니다.</p>
+      </div>
+
+      <div class="settings-group">
+        <h3 class="settings-group__title">데이터</h3>
+        <button class="btn btn--block" id="export-btn">데이터 내보내기 (JSON)</button>
+        <button class="btn btn--block btn--danger-outline" id="reset-btn">모든 데이터 초기화</button>
+      </div>
+      <p class="app-version">밀폐공간 안전관리 앱 · 로컬 저장(localStorage) · v1.0</p>
+    </section>
+  </main>
+
+  <!-- ===================== 하단 탭 네비게이션 ===================== -->
+  <nav class="tabbar" id="tabbar">
+    <button class="tab is-active" data-view="dashboard">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">대시보드</span>
+    </button>
+    <button class="tab" data-view="workers">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">작업자</span>
+      <span class="tab__badge" id="tab-inside-badge" hidden>0</span>
+    </button>
+    <button class="tab" data-view="checklist">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">체크리스트</span>
+    </button>
+    <button class="tab" data-view="records">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">기록</span>
+    </button>
+    <button class="tab" data-view="settings">
+      <span class="tab__ico" aria-hidden="true"></span><span class="tab__label">설정</span>
+    </button>
+  </nav>
+
+  <!-- ===================== 작업자 등록/수정 모달 ===================== -->
+  <div class="modal" id="worker-modal" hidden>
+    <div class="modal__backdrop" data-close-modal></div>
+    <div class="modal__sheet">
+      <h3 class="modal__title" id="worker-modal-title">작업자 등록</h3>
+      <label class="field">
+        <span class="field__label">이름</span>
+        <input type="text" id="wf-name" placeholder="예: 홍길동" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span class="field__label">위치 / 작업 구역</span>
+        <input type="text" id="wf-location" placeholder="예: 3구역 A맨홀" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span class="field__label">연락처 (선택)</span>
+        <input type="tel" id="wf-phone" placeholder="예: 010-0000-0000" autocomplete="off" />
+      </label>
+      <div class="modal__actions">
+        <button class="btn btn--ghost" data-close-modal>취소</button>
+        <button class="btn btn--primary" id="wf-save">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 토스트 ===================== -->
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
