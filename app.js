@@ -36,6 +36,7 @@ function defaultState(){
       intervalMin: 5,
       graceSec: 60,
       gasMode: 'normal',   // normal | alarm
+      experiment: false,   // 실험용 시나리오(3명 투입 시 15초 주의·30초 위험 자동 시연)
       thresholds: { o2Low:18, o2High:23.5, h2s:10, co:30, lel:10 },
       // 생체(바이탈) 임계치 — 안전/주의/위험 분류 기준
       vitals: {
@@ -102,10 +103,13 @@ function simGas(worker){
   let g = gasCache.get(worker.id);
   if(!g){ g = { o2:20.9, h2s:0.5, co:2, lel:1 }; gasCache.set(worker.id,g); }
 
-  // 목표값(정상 vs 경보) 으로 서서히 수렴 + 소량 노이즈
+  // 목표값(정상 vs 경보 vs 실험-가스노출) 으로 서서히 수렴 + 소량 노이즈
   const jitter=(v,amt)=> v + (Math.random()-0.5)*amt;
+  const gasExposed = scenarioRole(worker) === 'gasWarn';   // 실험: 가스 노출(주의 수준)
   const target = alarmMode
     ? { o2:17.2, h2s:th.h2s+8, co:th.co+22, lel:th.lel+6 }
+    : gasExposed
+    ? { o2:20.4, h2s:th.h2s*0.9, co:th.co*0.85, lel:1.7 }   // 임계 근접(주의)
     : { o2:20.9, h2s:1.2,      co:3,        lel:1.5 };
 
   g.o2  = clamp(jitter(g.o2 +(target.o2 -g.o2 )*0.15, 0.10), 12, 24);
@@ -192,6 +196,28 @@ function gasStatus(kind, val){
   return 'ok';
 }
 
+/* ============ 실험용 시나리오 모드 ============
+   관리자가 3명을 맨홀로 보내(작업 시작)면: 15초 후 1명이 가스 노출로 '주의',
+   30초 후 다른 1명이 안전확인 응답없음으로 '위험(119)' 상태가 된다. 시연·교육용. */
+let expScenario = null;   // { start, gasId, dangerId }
+function updateExperiment(){
+  if(!state.settings.experiment){ expScenario = null; return; }
+  const working = insideWorkers().filter(w=>w.connState==='connected');   // 작업 시작(연결 완료)
+  if(working.length < 3){ expScenario = null; return; }
+  // 배정된 두 작업자가 여전히 작업 중이면 앵커 유지, 아니면(변경/신규) 재설정
+  if(!expScenario || !working.some(w=>w.id===expScenario.gasId) || !working.some(w=>w.id===expScenario.dangerId)){
+    expScenario = { start: now(), gasId: working[0].id, dangerId: working[1].id };
+  }
+}
+/* 이 작업자의 시나리오 역할: 'gasWarn'(15초~) | 'noResp'(30초~) | null */
+function scenarioRole(w){
+  if(!expScenario) return null;
+  const el = now() - expScenario.start;
+  if(w.id===expScenario.gasId    && el >= 15000) return 'gasWarn';
+  if(w.id===expScenario.dangerId && el >= 30000) return 'noResp';
+  return null;
+}
+
 /* 작업자 종합 상태 판정 → {level, note}
    복귀 중이어도 실제 위험/주의는 그대로 유지한다(복귀를 눌러도 무조건 안전이 되지 않음). */
 function evalWorker(w){
@@ -204,6 +230,11 @@ function evalWorker(w){
   return ev;
 }
 function evalWorkerCore(w){
+  // 실험용 시나리오: 강제 상태(가스 주의 / 응답없음 위험)
+  const role = scenarioRole(w);
+  if(role==='noResp')  return { level:'danger', note:'안전확인 응답없음 · 119 연락', noMove:true };
+  if(role==='gasWarn') return { level:'warn',   note:'가스 노출 주의' };
+
   const g = gasCache.get(w.id) || simGas(w);
   const gasLevels = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)];
   const gasDanger = gasLevels.includes('danger');
@@ -1142,6 +1173,7 @@ function renderSettings(){
   $('#set-interval').value = s.intervalMin;
   $('#set-grace').value    = s.graceSec;
   $('#set-gasmode').value  = s.gasMode;
+  $('#set-experiment').value = s.experiment ? 'on' : 'off';
   $('#th-o2low').value  = s.thresholds.o2Low;
   $('#th-o2high').value = s.thresholds.o2High;
   $('#th-h2s').value    = s.thresholds.h2s;
@@ -1522,6 +1554,7 @@ function tick(){
   $('#topbar-clock').textContent = fmtClock(now());
   const sbc = $('#statusbar-clock'); if(sbc) sbc.textContent = fmtHM(now());
   promoteConnections();
+  updateExperiment();      // 실험용 시나리오 앵커/역할 갱신
   maybeProactiveRadio();
   autoDetectAlarms();
   updateStatStrip();
@@ -1689,6 +1722,10 @@ function bindEvents(){
   $('#set-gasmode').addEventListener('change', e=>{
     state.settings.gasMode = e.target.value; save();
     toast(e.target.value==='alarm'?'경보 테스트 모드로 전환했습니다.':'정상 모드로 전환했습니다.', e.target.value==='alarm'?'danger':'ok');
+  });
+  $('#set-experiment').addEventListener('change', e=>{
+    state.settings.experiment = e.target.value==='on'; expScenario = null; save();
+    toast(state.settings.experiment ? '실험용 시나리오 ON · 3명 투입 시 15초 주의 · 30초 위험' : '실험용 시나리오 OFF', state.settings.experiment?'warn':'ok');
   });
 
   // 데이터
