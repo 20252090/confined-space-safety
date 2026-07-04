@@ -194,6 +194,9 @@ function gasStatus(kind, val){
 
 /* 작업자 종합 상태 판정 → {level, note}
    복귀 중이어도 실제 위험/주의는 그대로 유지한다(복귀를 눌러도 무조건 안전이 되지 않음). */
+/* 시연 트리거: 내부 작업자 1명을 강제 상태로 (id -> 'noResp' | 'gas'). 새로고침 시 해제 */
+const forcedDemo = new Map();
+
 function evalWorker(w){
   if(w.connState==='connecting') return { level:'ok', note:'AR·태블릿 연결 중', connecting:true };
   const ev = evalWorkerCore(w);
@@ -204,6 +207,11 @@ function evalWorker(w){
   return ev;
 }
 function evalWorkerCore(w){
+  // 시연 트리거로 강제된 상태 우선
+  const demo = forcedDemo.get(w.id);
+  if(demo==='gas')    return { level:'danger', note:'가스 노출 위험' };
+  if(demo==='noResp') return { level:'warn',   note:'안전확인 응답 없음' };
+
   const g = gasCache.get(w.id) || simGas(w);
   const gasLevels = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)];
   const gasDanger = gasLevels.includes('danger');
@@ -1322,6 +1330,7 @@ const rescueSet  = new Set();   // 구조 알림 중복 방지 (id)
 function clearWorkerFlags(id){
   ['::gas','::resp','::vital','::warn','::radio'].forEach(s=>{ alarmedSet.delete(id+s); warnedSet.delete(id+s); });
   rescueSet.delete(id);
+  forcedDemo.delete(id);   // 시연 강제 상태도 해제
 }
 
 function autoDetectAlarms(){
@@ -1518,6 +1527,21 @@ function refreshAll(){
   else if(currentView==='prep') renderPrep();
 }
 
+/* 시연 버튼: 내부 작업자 1명을 응답없음(주의)/가스노출(위험) 상태로 강제 */
+function forceDemo(kind){
+  const list = insideWorkers();
+  if(!list.length){ toast('작업장 안에 작업자가 없습니다.', 'warn'); return; }
+  // 아직 시연 상태가 아닌 작업자 우선 → 다른 상태의 작업자 → 첫 작업자
+  const target = list.find(w=>!forcedDemo.has(w.id))
+              || list.find(w=>forcedDemo.get(w.id)!==kind)
+              || list[0];
+  forcedDemo.set(target.id, kind);
+  autoDetectAlarms();   // 위험이면 구조 알림·경보 즉시 발령
+  refreshAll();
+  if(kind==='gas') toast(`${target.name} · 가스 노출 — 위험 발생`, 'danger');
+  else             toast(`${target.name} · 안전확인 응답 없음 — 주의 발생`, 'warn');
+}
+
 function tick(){
   $('#topbar-clock').textContent = fmtClock(now());
   const sbc = $('#statusbar-clock'); if(sbc) sbc.textContent = fmtHM(now());
@@ -1577,6 +1601,10 @@ function bindEvents(){
     const tab = e.target.closest('.tab'); if(!tab) return;
     switchView(tab.dataset.view);
   });
+
+  // 시연 트리거 버튼(상단)
+  $('#demo-noresp').addEventListener('click', ()=>forceDemo('noResp'));
+  $('#demo-gas').addEventListener('click', ()=>forceDemo('gas'));
 
   // SOS · 설정(상단 ⚙)
   $('#sos-btn').addEventListener('click', triggerSOS);
