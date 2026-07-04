@@ -201,8 +201,9 @@ function evalWorker(w){
   if(w.connState==='connecting') return { level:'ok', note:'AR·태블릿 연결 중', connecting:true };
   const ev = evalWorkerCore(w);
   if(w.returning){
-    if(ev.level==='ok') return { level:'ok', note:'복귀 중', returning:true };
-    return Object.assign({}, ev, { note:'복귀 중 · '+ev.note, returning:true });
+    const prefix = w.rescuing ? '구조중' : '복귀 중';   // 119 접수 후 구조 복귀면 '구조중'
+    if(ev.level==='ok') return { level:'ok', note:prefix, returning:true };
+    return Object.assign({}, ev, { note:prefix+' · '+ev.note, returning:true, rescuing:!!w.rescuing });
   }
   return ev;
 }
@@ -1233,14 +1234,14 @@ function requestReturn(id){
   if(p){ p.st='ascend'; p.tx=p.cx; p.ty=SURF+1; } else { finalizeReturn(id); return; }
   // 복귀를 눌러도 위험/주의 상태는 유지 — 경보 플래그·구조 알림을 강제로 끄지 않는다
   save();
-  toast(`${w.name} 복귀 중 — 맨홀로 상승`, 'ok');
+  toast(w.rescuing ? `${w.name} 구조중 — 맨홀로 상승` : `${w.name} 복귀 중 — 맨홀로 상승`, w.rescuing?'danger':'ok');
   refreshAll();
 }
 
 /* 지표면 도달 → 완전 복귀(입출입 기록 마감·상태 정리) */
 function finalizeReturn(id){
   const w = state.workers.find(x=>x.id===id); if(!w||!w.inside) return;
-  w.inside = false; w.returning = false;
+  w.inside = false; w.returning = false; w.rescuing = false;
   const exitedAt = now();
   const log = state.logs.find(l=>l.id===w.logId);
   if(log){ log.exitedAt = exitedAt; log.durationSec = Math.floor((exitedAt-log.enteredAt)/1000); }
@@ -1676,9 +1677,13 @@ function bindEvents(){
   $('#rescue-radio').addEventListener('click', ()=>{ if(rescueTargetId){ const id=rescueTargetId; closeRescue(); openRadio(id); } });
   $('#rescue-call').addEventListener('click', ()=>{
     if(!rescueTargetId) return;
-    const w = state.workers.find(x=>x.id===rescueTargetId);
+    const id = rescueTargetId;
+    const w = state.workers.find(x=>x.id===id);
+    const wasDanger = w && w.inside && evalWorker(w).level==='danger';
     report119(w ? `${w.name} · ${mhLabel(w)}` : '');
     closeRescue();   // 119 신고 접수 후 구조 알림(오버레이) 자동 닫힘
+    // 위험 상태면: 상태는 위험 유지한 채 '구조중'으로 복귀 시작
+    if(wasDanger && !w.returning){ w.rescuing = true; requestReturn(id); }
   });
   // SOS 전체 대피 배너의 119 버튼
   const sosCall = $('.sos-banner__call'); if(sosCall) sosCall.addEventListener('click', ()=>report119('전체 대피'));
