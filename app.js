@@ -210,8 +210,9 @@ function evalWorker(w){
 function evalWorkerCore(w){
   // 시연 트리거로 강제된 상태 우선
   const demo = forcedDemo.get(w.id);
-  if(demo==='gas')    return { level:'danger', note:'가스 노출 위험' };
-  if(demo==='noResp') return { level:'warn',   note:'안전확인 응답 없음' };
+  if(demo==='gas')     return { level:'danger', note:'가스 노출 위험' };
+  if(demo==='gasWarn') return { level:'warn',   note:'가스 노출 주의' };
+  if(demo==='noResp')  return { level:'warn',   note:'안전확인 응답 없음' };
 
   const g = gasCache.get(w.id) || simGas(w);
   const gasLevels = [gasStatus('o2',g.o2),gasStatus('h2s',g.h2s),gasStatus('co',g.co),gasStatus('lel',g.lel)];
@@ -1534,13 +1535,26 @@ function forceDemo(kind){
   if(!list.length){ toast('작업장 안에 작업자가 없습니다.', 'warn'); return; }
   // 아직 시연 상태가 아닌 작업자 우선 → 다른 상태의 작업자 → 첫 작업자
   const target = list.find(w=>!forcedDemo.has(w.id))
-              || list.find(w=>forcedDemo.get(w.id)!==kind)
+              || list.find(w=>forcedDemo.get(w.id)!==kind && forcedDemo.get(w.id)!=='gasWarn')
               || list[0];
+  if(kind==='gas'){
+    // 먼저 주의(가스 노출) → 1초 뒤 위험으로 격상
+    forcedDemo.set(target.id, 'gasWarn');
+    refreshAll();
+    toast(`${target.name} · 가스 노출 — 주의`, 'warn');
+    setTimeout(()=>{
+      if(!target.inside || forcedDemo.get(target.id)!=='gasWarn') return;   // 그 사이 복귀·변경 시 중단
+      forcedDemo.set(target.id, 'gas');
+      autoDetectAlarms();   // 위험 → 구조 알림·경보 발령
+      refreshAll();
+      toast(`${target.name} · 가스 노출 — 위험 격상`, 'danger');
+    }, 1000);
+    return;
+  }
   forcedDemo.set(target.id, kind);
-  autoDetectAlarms();   // 위험이면 구조 알림·경보 즉시 발령
+  autoDetectAlarms();
   refreshAll();
-  if(kind==='gas') toast(`${target.name} · 가스 노출 — 위험 발생`, 'danger');
-  else             toast(`${target.name} · 안전확인 응답 없음 — 주의 발생`, 'warn');
+  toast(`${target.name} · 안전확인 응답 없음 — 주의 발생`, 'warn');
 }
 
 function tick(){
