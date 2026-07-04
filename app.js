@@ -1537,6 +1537,11 @@ function forceDemo(kind){
   const target = list.find(w=>!forcedDemo.has(w.id))
               || list.find(w=>forcedDemo.get(w.id)!==kind && forcedDemo.get(w.id)!=='gasWarn')
               || list[0];
+  // 시연 상태를 깨끗하게: 이전 복귀·구조중을 해제하고 제자리(작업 심도)에 정지
+  target.returning = false; target.rescuing = false;
+  const tp = wpos.get(target.id);
+  if(tp){ tp.st='pause'; if(tp.cy!=null) tp.y=tp.cy; tp.tx=tp.cx; tp.ty=tp.y; tp.lastMoveAt=now(); }
+  save();
   if(kind==='gas'){
     // 먼저 주의(가스 노출) → 1초 뒤 위험으로 격상
     forcedDemo.set(target.id, 'gasWarn');
