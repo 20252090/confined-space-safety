@@ -1545,7 +1545,7 @@ function forceDemo(kind){
   if(tp){ tp.st='pause'; if(tp.cy!=null) tp.y=tp.cy; tp.tx=tp.cx; tp.ty=tp.y; tp.lastMoveAt=now(); }
   save();
   if(kind==='gas'){
-    // 먼저 주의(가스 노출) → 1초 뒤 위험으로 격상
+    // 먼저 주의(가스 노출) → 4초 뒤 위험으로 격상
     forcedDemo.set(target.id, 'gasWarn');
     refreshAll();
     toast(`${target.name} · 가스 노출 — 주의`, 'warn');
@@ -1555,7 +1555,7 @@ function forceDemo(kind){
       autoDetectAlarms();   // 위험 → 구조 알림·경보 발령
       refreshAll();
       toast(`${target.name} · 가스 노출 — 위험 격상`, 'danger');
-    }, 1000);
+    }, 4000);
     return;
   }
   forcedDemo.set(target.id, kind);
