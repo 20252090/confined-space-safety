@@ -201,9 +201,11 @@ function evalWorker(w){
   if(w.connState==='connecting') return { level:'ok', note:'AR·태블릿 연결 중', connecting:true };
   const ev = evalWorkerCore(w);
   if(w.returning){
-    const prefix = w.rescuing ? '구조중' : '복귀 중';   // 119 접수 후 구조 복귀면 '구조중'
-    if(ev.level==='ok') return { level:'ok', note:prefix, returning:true };
-    return Object.assign({}, ev, { note:prefix+' · '+ev.note, returning:true, rescuing:!!w.rescuing });
+    // '구조중'은 실제로 위험일 때만 — 위험이 아니면 일반 '복귀 중'
+    const rescuing = !!w.rescuing && ev.level==='danger';
+    const prefix = rescuing ? '구조중' : '복귀 중';
+    if(ev.level==='ok') return { level:'ok', note:'복귀 중', returning:true };
+    return Object.assign({}, ev, { note:prefix+' · '+ev.note, returning:true, rescuing });
   }
   return ev;
 }
