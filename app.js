@@ -945,6 +945,12 @@ function animateWorkers(t){
   if(currentView!=='dashboard') return;
   insideWorkers().forEach(w=>{
     const p=wpos.get(w.id); if(!p) return;
+    if(forcedDemo.get(w.id)==='noResp'){
+      // 응답없음(무움직임): 현위치에 고정 — 이동/배회 없음
+      const el=document.getElementById('mk-'+w.id);
+      if(el){ el.style.left=p.x+'%'; el.style.top=p.y+'%'; }
+      return;
+    }
     if(p.st==='connect'){
       // AR·태블릿 연결 대기 — 지표면에서 정지
     } else if(p.st==='ascend'){
@@ -1541,10 +1547,10 @@ function forceDemo(kind){
   const target = list.find(w=>!forcedDemo.has(w.id))
               || list.find(w=>forcedDemo.get(w.id)!==kind && forcedDemo.get(w.id)!=='gasWarn')
               || list[0];
-  // 시연 상태를 깨끗하게: 이전 복귀·구조중을 해제하고 제자리(작업 심도)에 정지
+  // 시연 상태를 깨끗하게: 이전 복귀·구조중을 해제하고 '현위치'에 정지(이동·스냅 없음)
   target.returning = false; target.rescuing = false;
   const tp = wpos.get(target.id);
-  if(tp){ tp.st='pause'; if(tp.cy!=null) tp.y=tp.cy; tp.tx=tp.cx; tp.ty=tp.y; tp.lastMoveAt=now(); }
+  if(tp){ tp.st='pause'; tp.tx=tp.x; tp.ty=tp.y; tp.lastMoveAt=now(); }
   save();
   if(kind==='gas'){
     // 먼저 주의(가스 노출) → 4초 뒤 위험으로 격상
