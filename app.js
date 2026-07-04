@@ -954,10 +954,9 @@ function animateWorkers(t){
     if(p.st==='connect'){
       // AR·태블릿 연결 대기 — 지표면에서 정지
     } else if(p.st==='ascend'){
-      // 복귀 — 맨홀 위(지표면)로 상승 (구조중이면 즉시 빠르게)
+      // 복귀 — 맨홀 위(지표면)로 상승 (구조중도 평소와 동일 속도)
       p.x=p.cx;
-      const spd = w.rescuing ? RESCUE_ASCEND_SPEED : ASCEND_SPEED;
-      p.y=Math.max(SURF+1, p.y - spd*dt);
+      p.y=Math.max(SURF+1, p.y - ASCEND_SPEED*dt);
       p.lastMoveAt=now();
       if(p.y<=SURF+1.1){ p.y=SURF+1; finalizeReturn(w.id); return; }
     } else if(p.st==='descend'){
@@ -1235,7 +1234,6 @@ function mhLabel(w){ return (w && MH_BY_ID[w.mh] && MH_BY_ID[w.mh].label) || (w&
 
 /* 복귀 요청 — 맨홀 위(지표면)로 천천히 상승 시작. 도달 시 finalizeReturn */
 const ASCEND_SPEED = 1.0;    // 상승 속도(세로 %/s) — 하강보다 느리게(천천히 복귀)
-const RESCUE_ASCEND_SPEED = 40;   // 구조중: 즉시 빠르게 맨홀로 상승
 function requestReturn(id){
   const w = state.workers.find(x=>x.id===id); if(!w||!w.inside||w.returning) return;
   // 연결 중(아직 하강 전)이면 즉시 복귀 확정
